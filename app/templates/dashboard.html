@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · LeadFlow{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">AUTONOMOUS RESEARCH · HUMAN APPROVAL</p>
+    <h1>Ethical lead pipeline</h1>
+    <p>Discover, verify, score and draft automatically. New outreach waits for your approval; replies and opt-outs stop follow-ups.</p>
+  </div>
+  <div class="hero-actions">
+    {% if runtime_mode == 'demo' %}<form method="post" action="/mode/live"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="mode-switch-live">Switch to LIVE DATA</button></form>{% else %}<form method="post" action="/mode/demo"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger">Switch to DEMO</button></form>{% endif %}
+    <form method="post" action="/jobs/discover"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Run daily discovery</button></form>
+    <form method="post" action="/jobs/fast-start"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Run {{ settings.startup_discovery_target }}-candidate fast start</button></form>
+    <form method="post" action="/jobs/sync"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">Sync Gmail replies</button></form>
+    <form method="post" action="/jobs/sheet"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">Sync Google Sheet</button></form>
+    <form method="post" action="/jobs/send"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">Process send queue</button></form>
+  </div>
+</section>
+<section class="gate {{ 'ready' if runtime_mode == 'live' else 'blocked' }}"><strong>Current mode: {{ runtime_mode|upper }}</strong><span>{{ 'Real public business discovery is active; every source still requires review.' if runtime_mode == 'live' else 'Synthetic leads only. Demo and live records are stored separately.' }}</span></section>
+<section class="gate {{ 'ready' if settings.fast_start_enabled else 'blocked' }}"><strong>Fast start {{ 'enabled' if settings.fast_start_enabled else 'disabled' }}</strong><span>Startup candidate target: {{ settings.startup_discovery_target }} · Approved backlog is {{ 'processed at startup' if settings.startup_send_approved else 'not processed at startup' }}.</span></section>
+<section class="gate {{ 'ready' if send_ready else 'blocked' }}">
+  <strong>{{ 'Production send gate ready' if send_ready else 'Production sending is blocked' }}</strong>
+  <span>{% if not send_ready %}Keep it blocked until Live mode, credentials, HTTPS, postal address and testing are complete.{% else %}SENDING_ENABLED is on. Approved messages can send during recipient-local business hours.{% endif %}</span>
+  <a href="/health">View gate status</a>
+</section>
+{% if settings.daily_total_send_limit > settings.effective_total_send_limit %}<section class="gate blocked"><strong>50/day request is safety-capped at {{ settings.effective_total_send_limit }}</strong><span>Set HIGH_VOLUME_ACKNOWLEDGED and MAILBOX_AUTHENTICATION_CONFIRMED only after verifying provider policy, SPF/DKIM/DMARC, and bounce handling.</span></section>{% endif %}
+{% set dj = discovery_job or {} %}{% set dp = dj.get('progress', {}) %}
+<section class="panel discovery-monitor" data-discovery-monitor data-status-url="/jobs/discovery/status" data-initial-status="{{ dj.get('status', 'idle') }}">
+  <div class="panel-head">
+    <div><h2>Live discovery activity</h2><span class="muted">Google Maps → public contact check → website audit → scoring → AI drafts → human review</span></div>
+    <span class="badge large {{ dj.get('status', 'idle') }}" data-discovery-status>{{ dj.get('status', 'idle')|upper }}</span>
+  </div>
+  <div class="discovery-now">
+    <span class="activity-dot {{ 'running' if discovery_running else dj.get('status', 'idle') }}" data-discovery-dot></span>
+    <div><strong data-discovery-message>{{ dp.get('message', 'No discovery job has run yet. Use Fast Start to begin.') }}</strong><small data-discovery-phase>Phase: {{ dp.get('phase', 'idle')|replace('_', ' ') }}</small></div>
+    <small data-discovery-elapsed>{% if dj %}Elapsed: {{ dj.get('elapsed_seconds', 0) }}s{% endif %}</small>
+  </div>
+  <div class="discovery-progress"><progress data-discovery-progress max="{{ dp.get('candidate_target', 1) or 1 }}" value="{{ dp.get('candidates_seen', 0) or 0 }}"></progress><span data-discovery-progress-label>{{ dp.get('candidates_seen', 0) or 0 }} / {{ dp.get('candidate_target', 0) or 0 }} candidates checked</span></div>
+  <div class="discovery-stats">
+    <article><span>Map candidates</span><strong data-discovery-stat="candidates_seen">{{ dp.get('candidates_seen', 0) or 0 }}</strong></article>
+    <article><span>Saved leads</span><strong data-discovery-stat="inserted">{{ dp.get('inserted', 0) or 0 }}</strong></article>
+    <article><span>Duplicates skipped</span><strong data-discovery-stat="duplicates_skipped">{{ dp.get('duplicates_skipped', 0) or 0 }}</strong></article>
+    <article><span>Websites audited</span><strong data-discovery-stat="websites_audited">{{ dp.get('websites_audited', 0) or 0 }}</strong></article>
+    <article><span>Public contacts</span><strong data-discovery-stat="public_contacts_found">{{ dp.get('public_contacts_found', 0) or 0 }}</strong></article>
+    <article><span>Pending review</span><strong data-discovery-stat="pending_approval">{{ dp.get('pending_approval', 0) or 0 }}</strong></article>
+  </div>
+  <div class="discovery-current">
+    <div><span>Provider</span><strong data-discovery-provider>{{ dp.get('provider', 'Waiting') }}</strong></div>
+    <div><span>Current search</span><strong data-discovery-query>{{ dp.get('current_query', '—') or '—' }}</strong></div>
+    <div><span>Current business</span><strong data-discovery-business>{{ dp.get('current_business', '—') or '—' }}</strong></div>
+    <div><span>Website</span><strong data-discovery-website>{{ dp.get('current_website', '—') or '—' }}</strong></div>
+  </div>
+  <div class="notice error" data-discovery-error {% if not dj.get('error') %}hidden{% endif %}>{{ dj.get('error', '') }}</div>
+  <div class="activity-log"><h3>Recent steps</h3><ol data-discovery-events>{% for event in dp.get('events', []) %}<li><time>{{ event.get('at', '') }}</time><span>{{ event.get('message', '') }}</span></li>{% else %}<li class="muted">Waiting for discovery activity.</li>{% endfor %}</ol></div>
+</section>
+<section class="metrics">
+  <article><span>Pending approval</span><strong>{{ counts.get('pending_approval', 0) }}</strong></article>
+  <article><span>Approved / active</span><strong>{{ counts.get('approved', 0) + counts.get('sequence_active', 0) }}</strong></article>
+  <article><span>Queue items</span><strong>{{ due_count }}</strong></article>
+  <article><span>Messages sent</span><strong>{{ sent_count }}</strong></article>
+  <article><span>Estimated open rate</span><strong>{{ '%.1f%%'|format(estimated_open_rate * 100) }}</strong><small>No tracking pixel</small></article>
+  <article><span>Replies</span><strong>{{ counts.get('replied', 0) }}</strong></article>
+  <article><span>Conversions</span><strong>{{ converted_count }}</strong></article>
+  <article><span>Affiliate clicks</span><strong>{{ affiliate_summary.clicks }}</strong></article>
+  <article><span>Affiliate earnings</span><strong>${{ '%.2f'|format(affiliate_summary.commission) }}</strong></article>
+  <article><span>Do not contact</span><strong>{{ dnc_count }}</strong></article>
+</section>
+<section class="panel"><div class="panel-head"><h2>Conversion funnel</h2><span>Actual sends, replies, clicks, and recorded conversions</span></div><div class="funnel"><label>Sent <progress max="{{ sent_count or 1 }}" value="{{ sent_count }}"></progress><strong>{{ sent_count }}</strong></label><label>Replies <progress max="{{ sent_count or 1 }}" value="{{ counts.get('replied', 0) }}"></progress><strong>{{ counts.get('replied', 0) }}</strong></label><label>Clicks <progress max="{{ sent_count or 1 }}" value="{{ affiliate_summary.clicks }}"></progress><strong>{{ affiliate_summary.clicks }}</strong></label><label>Conversions <progress max="{{ sent_count or 1 }}" value="{{ affiliate_summary.conversions }}"></progress><strong>{{ affiliate_summary.conversions }}</strong></label></div></section>
+<div class="grid two">
+<section class="panel">
+  <div class="panel-head"><h2>Highest-priority review queue</h2><a href="/leads?status=pending_approval">View all</a></div>
+  {% if top_leads %}
+  <table><thead><tr><th>Business</th><th>Location</th><th>Need</th><th>Score</th></tr></thead><tbody>
+  {% for lead in top_leads %}<tr><td><a href="/leads/{{ lead.id }}"><strong>{{ lead.business_name }}</strong></a><small>{{ lead.industry }}</small></td><td>{{ lead.city }}, {{ lead.state }}</td><td>{{ lead.need_score|round(1) }}</td><td><span class="score">{{ lead.weighted_score|round(1) }}</span></td></tr>{% endfor %}
+  </tbody></table>
+  {% else %}<div class="empty">No leads are waiting. Run discovery to populate the review queue.</div>{% endif %}
+</section>
+<section class="panel">
+  <div class="panel-head"><h2>Recent jobs</h2>{% if discovery_running %}<span class="muted">Live monitor updating every 2 seconds</span>{% endif %}</div>
+  {% if jobs %}<div class="job-list">{% for job in jobs %}<article><div><strong>{{ job.job_type }}</strong><span class="badge {{ job.status }}">{{ job.status }}</span></div><small>{{ job.started_at }}{% if job_messages.get(job.id) %} · {{ job_messages.get(job.id) }}{% endif %}{% if job_errors.get(job.id) %} · {{ job_errors.get(job.id) }}{% endif %}</small></article>{% endfor %}</div>{% else %}<div class="empty">No jobs have run.</div>{% endif %}
+</section>
+</div>
+{% endblock %}

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}LeadFlow{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=1.2.2">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark">LF</span><span>LeadFlow</span></div>
+  <nav>
+    <a href="/">Dashboard</a>
+    <a href="/leads">Leads</a>
+    <a href="/queue">Queue</a>
+    <a href="/campaign">Campaign</a>
+    <a href="/integrations">AI, Google & Gmail</a>
+    <a href="/admin">Admin</a>
+    <a href="/reports/leads.csv">Export leads</a>
+  </nav>
+  <button class="top-action" type="button" data-command-open title="Command palette (Ctrl/⌘ K)">⌘K</button>
+  <button class="top-action" type="button" data-theme-toggle title="Toggle dark mode">◐</button>
+  <div class="mode {{ 'danger' if runtime_mode == 'demo' else 'live' }}">{{ 'DEMO' if runtime_mode == 'demo' else 'LIVE DATA' }}</div>
+</header>
+<div class="command-palette" data-command-palette hidden><div class="command-card"><div><input placeholder="Search commands…"><button type="button" data-command-close>Close</button></div><a href="/">Dashboard</a><a href="/leads">Search leads</a><a href="/queue">Email queue</a><a href="/campaign">Campaigns</a><a href="/integrations">Integrations</a><a href="/admin">Admin panel</a><a href="/docs">API documentation</a></div></div>
+<main class="container">
+  {% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+  {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+<footer>
+  <p>Approval-gated, plain-text outreach. No tracking pixels. Stop all follow-ups after any reply, opt-out or bounce.</p>
+</footer>
+<script src="{{ url_for('static', path='app.js') }}?v=1.2.2" defer></script>
+</body>
+</html>

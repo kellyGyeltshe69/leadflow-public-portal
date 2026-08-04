@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Leads · LeadFlow{% endblock %}
+{% block content %}
+<div class="page-head"><div><p class="eyebrow">PUBLIC BUSINESS DATA ONLY</p><h1>Leads</h1></div></div>
+<form class="filters" method="get">
+  <input name="q" value="{{ q }}" placeholder="Search business">
+  <select name="mode"><option value="demo" {{ 'selected' if selected_mode == 'demo' else '' }}>Demo data</option><option value="live" {{ 'selected' if selected_mode == 'live' else '' }}>Live data</option><option value="all" {{ 'selected' if selected_mode == 'all' else '' }}>All data</option></select>
+  <select name="status"><option value="">All statuses</option>{% for value in statuses %}<option value="{{ value }}" {{ 'selected' if value == selected_status else '' }}>{{ value }}</option>{% endfor %}</select>
+  <button>Filter</button>
+</form>
+<section class="panel table-wrap">
+<table><thead><tr><th>Business</th><th>Mode</th><th>Location</th><th>Website status</th><th>Public contact</th><th>Scores N/A/G/R</th><th>Weighted</th><th>Status</th><th>Conversion</th><th>Verified</th></tr></thead><tbody>
+{% for lead in leads %}
+<tr>
+  <td><a href="/leads/{{ lead.id }}"><strong>{{ lead.business_name }}</strong></a><small>{{ lead.industry }}</small></td>
+  <td><span class="badge {{ 'completed' if lead.data_mode == 'live' else 'cancelled' }}">{{ lead.data_mode }}</span></td>
+  <td>{{ lead.city }}, {{ lead.state }}</td>
+  <td>{{ lead.website_status }}</td>
+  <td>{{ lead.contact_email or lead.contact_page or 'Not found' }}</td>
+  <td>{{ lead.need_score|round(0) }}/{{ lead.ability_score|round(0) }}/{{ lead.growth_score|round(0) }}/{{ lead.response_score|round(0) }}</td>
+  <td><span class="score">{{ lead.weighted_score|round(1) }}</span></td>
+  <td><span class="badge {{ lead.status }}">{{ lead.status }}</span></td>
+  <td>{{ lead.conversion_status }}</td>
+  <td>{{ lead.last_verified_at.strftime('%Y-%m-%d') if lead.last_verified_at else '—' }}</td>
+</tr>
+{% else %}<tr><td colspan="10" class="empty">No leads match this filter.</td></tr>{% endfor %}
+</tbody></table>
+</section>
+{% endblock %}

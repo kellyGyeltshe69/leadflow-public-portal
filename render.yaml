@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: leadflow-report-portal
+    runtime: python
+    plan: free
+    buildCommand: pip install --disable-pip-version-check -r requirements-public.txt
+    startCommand: python scripts/start_public_portal.py
+    healthCheckPath: /health
+    envVars:
+      # Set this to the Neon DIRECT PostgreSQL URL in the Render dashboard.
+      - key: DATABASE_URL
+        sync: false
+      # This MUST equal the APP_SECRET in local LeadFlow so signed links verify.
+      - key: APP_SECRET
+        sync: false
+      - key: AFFILIATE_URL
+        value: https://www.hostinger.com?REFERRALCODE=ZEVDAVIDBEXE
+      - key: SENDER_NAME
+        value: David Brown
+      - key: SENDER_ROLE
+        value: Independent Hostinger Affiliate
+      - key: LANDING_PAGES_ENABLED
+        value: "true"
+      - key: SENDING_ENABLED
+        value: "false"
+      - key: SCHEDULER_ENABLED
+        value: "false"
+      - key: ASYNC_WORKERS_ENABLED
+        value: "false"
+      - key: AUTO_CREATE_SCHEMA
+        value: "false"
+      - key: AUTO_MIGRATE_DATABASE
+        value: "true"
+      - key: METRICS_ENABLED
+        value: "false"
+      - key: DATABASE_POOL_SIZE
+        value: "3"
+      - key: DATABASE_MAX_OVERFLOW
+        value: "2"
+      - key: API_RATE_LIMIT_PER_MINUTE
+        value: "60"
+      - key: PYTHONUNBUFFERED
+        value: "1"

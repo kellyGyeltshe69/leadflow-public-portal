@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Queue · LeadFlow{% endblock %}
+{% block content %}
+<div class="page-head"><div><p class="eyebrow">FOLLOW-UPS STOP ON REPLY</p><h1>Message queue</h1></div></div>
+<section class="panel table-wrap"><table><thead><tr><th>Business</th><th>Stage</th><th>Subject</th><th>Status</th><th>Planned UTC</th><th>Sent UTC</th><th>Error</th></tr></thead><tbody>
+{% for item in messages %}<tr><td><a href="/leads/{{ item.lead_id }}">{{ item.lead.business_name }}</a></td><td>{{ item.stage }} / Day {{ item.day_offset }}</td><td>{{ item.subject }}</td><td><span class="badge {{ item.status }}">{{ item.status }}</span></td><td>{{ item.planned_at or '—' }}</td><td>{{ item.sent_at or '—' }}</td><td>{{ item.error or '' }}</td></tr>{% else %}<tr><td colspan="7" class="empty">No scheduled or historical messages.</td></tr>{% endfor %}
+</tbody></table></section>
+{% endblock %}

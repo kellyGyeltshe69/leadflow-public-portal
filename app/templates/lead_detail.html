@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}{{ lead.business_name }} · LeadFlow{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><p class="eyebrow">{{ lead.data_mode|upper }} LEAD {{ lead.id }} · {{ lead.city }}, {{ lead.state }}</p><h1>{{ lead.business_name }}</h1><p>{{ lead.industry }}</p></div>
+  <div class="actions">{% if public_report_url %}<a class="report-preview" target="_blank" rel="noopener" href="{{ public_report_url }}">Open public score page</a>{% endif %}<span class="badge large {{ lead.status }}">{{ lead.status }}</span></div>
+</div>
+<section class="score-grid">
+  <article><span>Need</span><strong>{{ lead.need_score|round(1) }}</strong><small>{{ lead.score_reasons.get('need','') }}</small></article>
+  <article><span>Ability</span><strong>{{ lead.ability_score|round(1) }}</strong><small>{{ lead.score_reasons.get('ability','') }}</small></article>
+  <article><span>Growth</span><strong>{{ lead.growth_score|round(1) }}</strong><small>{{ lead.score_reasons.get('growth','') }}</small></article>
+  <article><span>Response</span><strong>{{ lead.response_score|round(1) }}</strong><small>{{ lead.score_reasons.get('response','') }}</small></article>
+  <article class="weighted"><span>Weighted</span><strong>{{ lead.weighted_score|round(1) }}</strong><small>40% need · 20% ability · 25% growth · 15% response</small></article>
+</section>
+<div class="grid two">
+<section class="panel">
+  <h2>Verified public path</h2>
+  <dl class="details">
+    <dt>Website</dt><dd>{% if lead.website_url %}<a target="_blank" rel="noopener" href="{{ lead.website_url }}">{{ lead.website_url }}</a>{% else %}Not found{% endif %}</dd>
+    <dt>Website status</dt><dd>{{ lead.website_status }}</dd>
+    <dt>Public email</dt><dd>{{ lead.contact_email or 'Not found' }}</dd>
+    <dt>Contact page</dt><dd>{% if lead.contact_page %}<a target="_blank" rel="noopener" href="{{ lead.contact_page }}">{{ lead.contact_page }}</a>{% else %}Not found{% endif %}</dd>
+    <dt>Address</dt><dd>{{ lead.formatted_address or (lead.city ~ ', ' ~ lead.state) }}</dd>
+    <dt>Last verified</dt><dd>{{ lead.last_verified_at or 'Never' }}</dd>
+  </dl>
+  {% if lead.audit_facts.get('screenshot_path') %}<h3>Mobile viewport evidence</h3><a href="/leads/{{ lead.id }}/screenshot" target="_blank"><img class="mobile-screenshot" src="/leads/{{ lead.id }}/screenshot" alt="Mobile website screenshot for {{ lead.business_name }}"></a><p><small>Captured for evidence only; verify current content before outreach.</small></p>{% endif %}
+  <h3>Observed issues</h3>
+  <ul>{% for issue in lead.issues %}<li>{{ issue }}</li>{% else %}<li>No major issue verified.</li>{% endfor %}</ul>
+  <h3>Opportunity</h3><p>{{ lead.opportunity }}</p>
+  <details><summary>Technical facts and limitations</summary><pre>{{ lead.audit_facts | tojson(indent=2) }}</pre></details>
+</section>
+<section class="panel">
+  <h2>Source evidence</h2>
+  <div class="evidence-list">{% for item in lead.evidence %}<article><span>{{ item.evidence_type }}</span> <span class="confidence {{ item.confidence }}">{{ item.confidence }} confidence</span><p>{{ item.observation }}</p><a target="_blank" rel="noopener" href="{{ item.source_url }}">Open source</a><small>{{ item.captured_at }}</small></article>{% else %}<div class="empty">No evidence rows recorded.</div>{% endfor %}</div>
+</section>
+</div>
+{% if lead.checklist %}<section class="panel"><h2>Free value checklist</h2><ol>{% for item in lead.checklist %}<li>{{ item }}</li>{% endfor %}</ol></section>{% endif %}
+<section class="panel">
+  <div class="panel-head"><h2>Four-message sequence</h2><span>Affiliate link appears only after value in stages 0 and 2.</span></div>
+  <div class="messages">{% for item in lead.messages %}<details {{ 'open' if item.stage == 0 else '' }}><summary><span>Stage {{ item.stage }} · Day {{ item.day_offset }}</span><strong>{{ item.subject }}</strong><span class="badge {{ item.status }}">{{ item.status }}</span></summary>
+  {% if item.status in ['draft','scheduled','retry'] %}<form class="message-editor" method="post" action="/messages/{{ item.id }}/edit"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Subject<input name="subject" value="{{ item.subject }}" required></label><label>Editable value-first text<textarea name="body_core" rows="10" required>{{ item.body_core }}</textarea></label><button class="secondary">Save draft</button></form>{% endif %}
+  <h4>System-composed preview</h4><pre>{{ item.body_final }}</pre>{% if item.planned_at %}<small>Planned: {{ item.planned_at }} UTC</small>{% endif %}{% if item.error %}<div class="notice error">{{ item.error }}</div>{% endif %}</details>{% else %}<div class="empty">No drafts were created because the lead is not qualified or lacks a permitted public email.</div>{% endfor %}</div>
+</section>
+<section class="panel form-panel"><h2>Response and conversion tracking</h2><form method="post" action="/leads/{{ lead.id }}/outcome"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="grid two"><label>Conversion status<select name="conversion_status"><option value="not_started" {{ 'selected' if lead.conversion_status == 'not_started' else '' }}>Not started</option><option value="interested" {{ 'selected' if lead.conversion_status == 'interested' else '' }}>Interested</option><option value="maybe_later" {{ 'selected' if lead.conversion_status == 'maybe_later' else '' }}>Maybe later</option><option value="converted" {{ 'selected' if lead.conversion_status == 'converted' else '' }}>Converted</option><option value="not_converted" {{ 'selected' if lead.conversion_status == 'not_converted' else '' }}>Not converted</option></select></label><label>Notes<input name="conversion_notes" value="{{ lead.conversion_notes }}" placeholder="Record only necessary business-response notes"></label></div><button class="secondary">Save outcome</button></form></section>
+<section class="actions panel">
+  <form method="post" action="/leads/{{ lead.id }}/reverify"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">Reverify now</button></form>
+  {% if lead.data_mode == 'live' and lead.status in ['pending_approval','approved'] %}<form method="post" action="/leads/{{ lead.id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Approve and schedule</button></form>{% elif lead.data_mode == 'demo' %}<span class="badge cancelled">Demo leads cannot be sent</span>{% endif %}
+  {% if lead.status not in ['rejected','opted_out','bounced'] %}<form class="reject" method="post" action="/leads/{{ lead.id }}/reject"><input type="hidden" name="csrf" value="{{ csrf }}"><input name="reason" placeholder="Reason for rejection"><button class="danger">Reject / stop</button></form>{% endif %}
+</section>
+{% endblock %}

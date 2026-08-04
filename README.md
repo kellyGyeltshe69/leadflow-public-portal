@@ -1,0 +1,162 @@
+# Free public report portal (Render + Neon)
+
+This mode keeps discovery, website auditing, Ollama, Gmail, and the administrator dashboard on your Windows computer. A small hosted FastAPI process serves only the signed public report, affiliate redirect, and opt-out routes:
+
+```text
+/r/{token}
+/go/{token}
+/unsubscribe/{token}
+```
+
+Both local LeadFlow and the hosted portal use the same Neon PostgreSQL database and the same `APP_SECRET`. That makes report links, click records, and opt-outs immediately visible to the local application without exposing Composio or Gmail credentials to Render.
+
+## Important free-tier limitations
+
+- Render's free web service can sleep after inactivity. The first report request after sleep may be slow.
+- Neon and Render limits/pricing can change; review their current official pages before deployment.
+- An `onrender.com` hostname is stable but less trustworthy than a future branded domain.
+- Keep `SENDING_ENABLED=false` until the public report, affiliate redirect, opt-out, and shared database have all been tested.
+
+## Recommended: one-command setup wizard
+
+Run only:
+
+```powershell
+python .\start.py --setup-free-portal
+```
+
+The wizard opens the official Neon, GitHub, and Render browser pages; reads copied URLs from the clipboard; migrates PostgreSQL to Neon; creates a sanitized deployment repository; commits and pushes it to the private GitHub repository; securely copies only `DATABASE_URL` and `APP_SECRET` for Render; saves `PUBLIC_REPORT_BASE_URL`; validates portal health; and then starts local LeadFlow. You do not paste secrets or connection strings into PowerShell.
+
+External providers still require you to create/authorize their accounts and click their consent/deploy buttons in the browser. `start.py` cannot legally accept third-party terms or authorize an account on your behalf. If Git for Windows is missing, the wizard opens its official installer page; install it and rerun the same command.
+
+The remaining sections document what the wizard performs and provide recovery details.
+
+## 1. Create the Neon database
+
+1. Create a free Neon project. Select a PostgreSQL version compatible with your local PostgreSQL installation when offered.
+2. Open **Connect** in Neon.
+3. Turn **Connection pooling off** and click the copy icon beside the **direct connection string**.
+4. Do not copy the browser address bar (`https://console.neon.tech/...`). The clipboard must contain text beginning with `postgresql://` (the wizard also accepts `DATABASE_URL='postgresql://...'` or `psql 'postgresql://...'`).
+5. Do not post that URL in chat or commit it to Git. It contains the database password.
+
+A Neon URL normally resembles:
+
+```text
+postgresql://USER:PASSWORD@HOST.neon.tech/DATABASE?sslmode=require&channel_binding=require
+```
+
+The provided migration script converts it to SQLAlchemy's `postgresql+psycopg` form automatically.
+
+## 2. Copy current LeadFlow data to Neon
+
+Stop LeadFlow with `Ctrl+C`. From the project folder run:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\migrate_to_neon.py
+```
+
+When prompted:
+
+1. Copy the Neon **direct** URL to your clipboard.
+2. Return to PowerShell and press Enter.
+3. Check the displayed source and target host/database names.
+4. Type `MIGRATE TO NEON` exactly.
+
+The script:
+
+- discovers the PostgreSQL 18/17 command-line tools on Windows;
+- creates a local custom-format backup without placing passwords in command arguments;
+- restores the schema and records into Neon in one transaction;
+- verifies the `users` and `leads` tables;
+- backs up the previous `.env`;
+- changes local `DATABASE_URL` to Neon;
+- keeps `SENDING_ENABLED=false`;
+- clears the clipboard and temporary password file.
+
+The local PostgreSQL source is not modified. If migration fails, the dump is retained under `backups/`; protect it because it contains LeadFlow data.
+
+Start local LeadFlow and verify the same lead count:
+
+```powershell
+python .\start.py
+```
+
+## 3. Put the project in a private Git repository
+
+Render deploys from GitHub, GitLab, or Bitbucket. GitHub Desktop is the simplest Windows option:
+
+1. Create a new **private** repository from the extracted `leadflow` folder.
+2. Before publishing, confirm `.env`, `.env.before-*`, `backups/`, `data/`, and `.venv/` are absent from the commit list.
+3. Publish the private repository.
+
+The supplied `.gitignore` excludes those sensitive/generated files. Never override that exclusion.
+
+## 4. Deploy the Render Blueprint
+
+1. In Render, choose **New → Blueprint**.
+2. Connect the private repository containing `render.yaml`.
+3. Select the free plan if Render offers it for the web service.
+4. Render asks for two secret values marked `sync: false`:
+   - `DATABASE_URL`: the same Neon direct URL now stored in local `.env`.
+   - `APP_SECRET`: exactly the same local `APP_SECRET`; changing it invalidates signed links.
+
+Copy each value without printing it:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\copy_env_value.py DATABASE_URL
+```
+
+Paste it into Render, then run:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\copy_env_value.py APP_SECRET
+```
+
+Paste it into Render. Do not add Composio, Gmail, Google Maps, JWT, administrator, or sender mailbox credentials to the public service.
+
+Deploy the Blueprint. `scripts/start_public_portal.py` automatically:
+
+- normalizes the Neon URL for psycopg;
+- runs Alembic migrations;
+- verifies the schema;
+- disables sending, scheduling, metrics, and workers;
+- starts only `app.public_portal` on Render's assigned port;
+- disables Uvicorn access logs so signed tokens are not written to ordinary access logs.
+
+## 5. Point local report links to Render
+
+After deployment, Render displays a stable URL such as:
+
+```text
+https://leadflow-report-portal.onrender.com
+```
+
+In local `.env`, set the dedicated report origin while leaving the local dashboard origin independent:
+
+```dotenv
+PUBLIC_REPORT_BASE_URL=https://YOUR-ACTUAL-RENDER-URL.onrender.com
+SENDING_ENABLED=false
+```
+
+Restart local LeadFlow:
+
+```powershell
+python .\start.py
+```
+
+On a live lead, use **Open public score page** and test from a phone on mobile data. The URL must use the Render hostname, not `127.0.0.1`.
+
+## 6. Required validation before sending
+
+1. `/health` returns `status: ok`.
+2. A signed `/r/{token}` report loads from outside your home network.
+3. The report has `noindex` and no tracking pixel.
+4. `/go/{token}` records a privacy-hashed click and redirects to the exact affiliate URL.
+5. A test opt-out POST cancels future messages in the shared Neon database.
+6. Local LeadFlow immediately shows the click/opt-out after refresh.
+7. Render contains no Composio/Gmail credentials.
+8. `SENDING_ENABLED` remains false until all checks pass.
+
+## Rollback
+
+The migration script creates `.env.before-neon-TIMESTAMP`. To return local LeadFlow to the original PostgreSQL server, stop LeadFlow and restore that file as `.env`. The original local PostgreSQL database remains unchanged.

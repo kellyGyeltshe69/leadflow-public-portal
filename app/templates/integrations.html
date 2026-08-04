@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Google & Gmail · LeadFlow{% endblock %}
+{% block content %}
+<div class="page-head"><div><p class="eyebrow">LOCAL AI + COMPOSIO-MANAGED GOOGLE</p><h1>AI, Google & Gmail control</h1><p>Ollama drafts locally. LeadFlow chooses deterministic Google actions while Composio stores and refreshes credentials.</p></div></div>
+<section class="gate {{ 'ready' if ai_report.get('ready') else 'blocked' }}"><strong>Local AI: {{ ai_report.get('provider') }}</strong><span>{{ ai_report.get('model','') }} · {{ ai_report.get('detail','') }}</span></section>
+<section class="gate {{ 'ready' if settings.composio_ready else 'blocked' }}"><strong>{{ 'Composio API configured' if settings.composio_ready else 'Composio API key missing' }}</strong><span>User scope: {{ settings.composio_user_id }}</span></section>
+<div class="grid three">
+{% for toolkit, label in [('gmail','Gmail'),('google_maps','Google Maps / Places'),('googlesheets','Google Sheets')] %}
+{% set item = report.get(toolkit, {}) %}
+<section class="panel integration-card">
+  <p class="eyebrow">{{ toolkit }}</p><h2>{{ label }}</h2>
+  <span class="badge {{ 'completed' if item.get('active') else 'failed' }}">{{ 'ACTIVE' if item.get('active') else 'NOT READY' }}</span>
+  {% if item.get('connection_id') %}<p><code>{{ item.get('connection_id') }}</code></p>{% endif %}
+  {% if item.get('error') %}<p class="muted">{{ item.get('error') }}</p>{% endif %}
+  {% if not item.get('active') %}<form method="post" action="/integrations/connect/{{ toolkit }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Connect with Composio</button></form>{% endif %}
+</section>
+{% endfor %}
+</div>
+<section class="panel">
+  <div class="panel-head"><div><h2>Google Sheets report</h2><p>Spreadsheet ID: <code>{{ settings.google_sheet_id or 'not configured' }}</code></p></div>
+  <form method="post" action="/jobs/sheet"><input type="hidden" name="csrf" value="{{ csrf }}"><button {{ 'disabled' if not settings.sheets_configured else '' }}>Sync now</button></form></div>
+  <p>LeadFlow replaces the <strong>{{ settings.google_sheet_leads_tab }}</strong> and <strong>{{ settings.google_sheet_outreach_tab }}</strong> tabs using RAW values, preventing spreadsheet-formula injection.</p>
+</section>
+<section class="panel"><h2>Active connections visible to this Composio user</h2>
+{% if active_connections %}<table><thead><tr><th>Toolkit</th><th>Alias</th><th>Connection ID</th><th>Status</th><th>Updated</th></tr></thead><tbody>{% for connection in active_connections %}<tr><td>{{ connection.toolkit }}</td><td>{{ connection.alias or '—' }}</td><td><code>{{ connection.id }}</code></td><td>{{ connection.status }}</td><td>{{ connection.updated_at }}</td></tr>{% endfor %}</tbody></table>{% else %}<div class="empty">No active connections found or Composio is not configured.</div>{% endif %}
+</section>
+<section class="panel"><h2>Why explicit connection IDs are safer</h2><p>If more than one account is connected for the same toolkit, LeadFlow refuses to choose automatically. Pin the intended account with <code>COMPOSIO_GMAIL_CONNECTION_ID</code>, <code>COMPOSIO_GOOGLE_MAPS_CONNECTION_ID</code>, or <code>COMPOSIO_SHEETS_CONNECTION_ID</code>.</p></section>
+{% endblock %}

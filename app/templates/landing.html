@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta name="referrer" content="no-referrer">
+  <title>{{ landing.headline }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=1.2.2">
+</head>
+<body class="landing-body">
+<main class="landing-shell">
+  <section class="landing-hero">
+    <p class="eyebrow">PUBLIC WEBSITE REVIEW</p>
+    <h1>{{ landing.headline }}</h1>
+    <p>Prepared from publicly accessible website information. Verify current details before acting.</p>
+    <div class="audit-score"><strong>{{ business.website_score|round(0) }}</strong><span>Opportunity score / 100</span></div>
+  </section>
+  <section class="panel">
+    <h2>What was observed</h2>
+    <ul>{% for problem in content.get('issues', content.get('ai_intelligence', {}).get('problems', []))[:8] %}<li>{{ problem }}</li>{% else %}<li>No critical issue was verified; focus on the customer journey before considering migration.</li>{% endfor %}</ul>
+  </section>
+  <section class="grid two">
+    <article class="panel"><h2>Potential benefits</h2><ul><li>An owned destination independent of social feeds</li><li>A clearer mobile inquiry or booking path</li><li>HTTPS, backups, and maintainable hosting</li></ul></article>
+    <article class="panel"><h2>Hosting recommendation</h2><p><strong>{{ landing.recommended_plan }}</strong></p><p>Compare current introductory term, included features, renewal pricing, and cancellation terms before purchasing.</p></article>
+  </section>
+  <section class="panel"><h2>Suggested next step</h2><p>Fix the verified issue first. A platform or host migration only makes sense when it improves reliability, ownership, or conversion.</p>
+    <a class="affiliate-cta" href="/go/{{ token }}" rel="nofollow sponsored">Review current Hostinger options</a>
+    <p class="affiliate-disclosure">Disclosure: {{ sender_name|default('David Brown', true) }} is an independent Hostinger affiliate and may earn a commission if you purchase through this button. This report is not produced by Hostinger.</p>
+  </section>
+  <section class="panel"><h2>FAQ</h2><details><summary>Does this page guarantee better rankings or sales?</summary><p>No. It summarizes public observations and offers practical options; outcomes are not guaranteed.</p></details><details><summary>Are prices shown here?</summary><p>No. Hosting prices and renewal terms change, so the button opens the current official offer.</p></details><details><summary>Are the testimonials real?</summary><p>No testimonials are displayed unless verified and approved. LeadFlow never fabricates testimonials.</p></details></section>
+  <footer class="portal-footer"><p>Prepared by {{ sender_name|default('David Brown', true) }} · {{ sender_role|default('Independent Hostinger Affiliate', true) }}</p><p>No tracking pixel is used. This private-link report is excluded from search indexing.</p>{% if unsubscribe_token %}<p><a href="/unsubscribe/{{ unsubscribe_token }}">Stop future outreach</a></p>{% endif %}</footer>
+</main>
+</body>
+</html>

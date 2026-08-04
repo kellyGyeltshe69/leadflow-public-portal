@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta name="referrer" content="no-referrer">
+  <title>Outreach preferences</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=1.2.2">
+</head>
+<body class="landing-body">
+<main class="landing-shell portal-narrow">
+  <section class="panel unsubscribe-card">
+    {% if confirmed and applied %}
+      <p class="eyebrow">PREFERENCE SAVED</p>
+      <h1>You have been opted out.</h1>
+      <p>No further LeadFlow outreach will be scheduled for this business contact.</p>
+    {% elif confirmed %}
+      <p class="eyebrow">NO ACTIVE CONTACT</p>
+      <h1>This contact is no longer active.</h1>
+      <p>No additional action is required.</p>
+    {% else %}
+      <p class="eyebrow">OUTREACH PREFERENCES</p>
+      <h1>Stop future email?</h1>
+      <p>Confirm below and no further LeadFlow messages will be scheduled for this business contact.</p>
+      <form method="post" action="/unsubscribe/{{ token }}"><button type="submit" class="danger">Confirm opt-out</button></form>
+    {% endif %}
+    <p class="muted">{{ sender_name|default('David Brown', true) }} · {{ sender_role|default('Independent Hostinger Affiliate', true) }}</p>
+  </section>
+</main>
+</body>
+</html>

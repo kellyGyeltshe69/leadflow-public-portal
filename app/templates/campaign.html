@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Campaign · LeadFlow{% endblock %}
+{% block content %}
+<div class="page-head"><div><p class="eyebrow">SCHEDULED DISCOVERY</p><h1>Campaign settings</h1><p>One new lead batch per UTC day, capped at 50 and approval-gated.</p></div></div>
+<section class="panel form-panel"><form method="post" action="/campaign">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Name<input name="name" value="{{ campaign.name }}" required></label>
+  <label class="check"><input type="checkbox" name="active" {{ 'checked' if campaign.active else '' }}> Campaign active</label>
+  <div class="grid two">
+    <label>Locations — one per line<textarea name="locations" rows="12" required>{{ campaign.locations | join('\n') }}</textarea></label>
+    <label>Industries — one per line<textarea name="industries" rows="12" required>{{ campaign.industries | join('\n') }}</textarea></label>
+  </div>
+  <div class="grid three">
+    <label>New leads/day<input type="number" name="daily_limit" min="1" max="50" value="{{ campaign.daily_limit }}"></label>
+    <label>Minimum score<input type="number" step="0.1" name="minimum_score" min="1" max="10" value="{{ campaign.minimum_score }}"></label>
+    <label>Discovery hour UTC<input type="number" name="discovery_hour_utc" min="0" max="23" value="{{ campaign.discovery_hour_utc }}"></label>
+  </div>
+  <button>Save campaign</button>
+</form></section>
+<section class="panel"><h2>Environment-controlled safety settings</h2><p>Sender identity, affiliate URL, Gmail credentials, AI key, postal address, public HTTPS URL and the master sending switch are intentionally controlled through <code>.env</code>, not this web form.</p><a href="/health">Inspect current gates</a></section>
+{% endblock %}
