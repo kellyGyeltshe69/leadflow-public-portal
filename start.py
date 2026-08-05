@@ -36,6 +36,7 @@ import urllib.request
 import venv
 import webbrowser
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote as urlquote
 from urllib.parse import urlparse
@@ -96,6 +97,34 @@ def open_or_print(url: str, no_browser: bool = False) -> None:
             webbrowser.open(url)
 
 
+def show_instruction_dialog(title: str, message: str) -> bool:
+    """Use a modal Windows dialog so secrets are never typed into the terminal."""
+    if os.name != "nt":
+        return False
+    root = None
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        messagebox.showinfo(title, message, parent=root)
+        return True
+    except Exception:
+        return False
+    finally:
+        if root is not None:
+            with suppress(Exception):
+                root.destroy()
+
+
+def complete_browser_step(title: str, message: str, fallback_phrase: str) -> None:
+    if show_instruction_dialog(title, message):
+        return
+    _confirm_phrase(message + f" Type {fallback_phrase} here: ", fallback_phrase)
+
+
 def set_env_line(text: str, key: str, value: str) -> str:
     pattern = re.compile(rf"^{re.escape(key)}=.*$", re.MULTILINE)
     replacement = f"{key}={value}"
@@ -115,6 +144,74 @@ def read_env(path: Path = ENV_FILE) -> dict[str, str]:
         key, value = line.split("=", 1)
         values[key.strip()] = value.strip().strip('"').strip("'")
     return values
+
+
+def _previous_env_candidates() -> list[Path]:
+    search_root = ROOT.parent.parent
+    candidates: list[Path] = []
+    for pattern in (
+        "leadflow_saas_production_v*/leadflow/.env",
+        "leadflow_composio*/leadflow/.env",
+    ):
+        for candidate in search_root.glob(pattern):
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved == ENV_FILE.resolve() or candidate.is_symlink() or not candidate.is_file():
+                continue
+            with suppress(OSError):
+                if candidate.stat().st_size <= 1_000_000:
+                    candidates.append(candidate)
+    return sorted(candidates, key=lambda item: item.stat().st_mtime, reverse=True)
+
+
+def _database_url_reachable(database_url: str, *, use_venv: bool = True) -> bool:
+    if database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if not database_url.startswith("postgresql+"):
+        return False
+    env = os.environ.copy()
+    env["DATABASE_URL"] = database_url
+    code = (
+        "import os; from sqlalchemy import create_engine, text; "
+        "e=create_engine(os.environ['DATABASE_URL'], pool_pre_ping=True); "
+        "c=e.connect(); c.execute(text('SELECT 1')); c.close(); e.dispose()"
+    )
+    try:
+        result = subprocess.run(
+            [str(project_python(use_venv)), "-c", code],
+            cwd=ROOT,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=25,
+            check=False,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def recover_previous_postgresql_env(*, use_venv: bool = True) -> Path | None:
+    """Recover the newest reachable PostgreSQL .env from a sibling extracted release."""
+    for candidate in _previous_env_candidates():
+        values = read_env(candidate)
+        database_url = values.get("DATABASE_URL", "")
+        app_secret = values.get("APP_SECRET", "")
+        if len(app_secret) < 32 or not database_url.startswith("postgresql"):
+            continue
+        if not _database_url_reachable(database_url, use_venv=use_venv):
+            continue
+        backup = ROOT / ".env.before-auto-recovery"
+        if ENV_FILE.exists() and not backup.exists():
+            shutil.copy2(ENV_FILE, backup)
+        shutil.copy2(candidate, ENV_FILE)
+        with suppress(OSError):
+            ENV_FILE.chmod(0o600)
+        log(f"Recovered the reachable PostgreSQL configuration from {candidate.parent}.")
+        return candidate
+    return None
 
 
 def ensure_env_file() -> tuple[dict[str, str], str | None]:
@@ -397,6 +494,31 @@ def _git_capture(git: str, repository: Path, *arguments: str) -> str:
     ).strip()
 
 
+def _extract_postgresql_url(value: str) -> str:
+    match = re.search(r"postgresql(?:\+psycopg)?://[^\s'\"<>]+", value or "", re.IGNORECASE)
+    return match.group(0).rstrip(");,`") if match else ""
+
+
+def _validated_direct_neon_url(value: str) -> tuple[str, str]:
+    candidate = _extract_postgresql_url(value)
+    if not candidate:
+        return "", "Clipboard does not contain a PostgreSQL connection string"
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return "", "The copied PostgreSQL connection string is malformed"
+    host = (parsed.hostname or "").lower()
+    if not (host == "neon.tech" or host.endswith(".neon.tech")):
+        return "", "The connection string is not for a Neon database"
+    if "-pooler." in host:
+        return "", "Connection pooling is on; copy the Direct connection string"
+    if not parsed.username or not parsed.password or not parsed.path.strip("/"):
+        return "", "The Neon connection string is missing its user, password, or database"
+    if candidate.startswith("postgresql://"):
+        candidate = candidate.replace("postgresql://", "postgresql+psycopg://", 1)
+    return candidate, ""
+
+
 def _valid_github_repository(value: str) -> str:
     value = value.strip().rstrip("/")
     if value.endswith(".git"):
@@ -404,6 +526,65 @@ def _valid_github_repository(value: str) -> str:
     if not re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
         return ""
     return value
+
+
+def _valid_public_portal_url(value: str) -> str:
+    value = value.strip().rstrip("/")
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return ""
+    host = (parsed.hostname or "").lower()
+    blocked_hosts = {"dashboard.render.com", "render.com", "console.neon.tech", "github.com"}
+    if (
+        parsed.scheme != "https"
+        or not host
+        or host in blocked_hosts
+        or host.endswith(".github.com")
+        or "yourdomain" in host
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    return value
+
+
+def _is_render_dashboard_url(value: str) -> bool:
+    try:
+        return (urlparse(value.strip()).hostname or "").lower() == "dashboard.render.com"
+    except ValueError:
+        return False
+
+
+def _read_public_portal_url_from_clipboard() -> str:
+    while True:
+        message = (
+            "Wait until Render shows the web service as Live.\n\n"
+            "Copy the public service URL shown near the service name "
+            "(for example, https://NAME.onrender.com).\n\n"
+            "Do not copy the dashboard.render.com browser address. "
+            "Return here and click OK after copying the public URL."
+        )
+        if not show_instruction_dialog("LeadFlow: copy the public Render URL", message):
+            input(message + " Then press Enter here: ")
+        candidate = _valid_public_portal_url(clipboard_text())
+        if candidate:
+            return candidate
+        print("The clipboard does not contain a public service origin such as https://NAME.onrender.com.")
+        print("Do not copy a dashboard.render.com browser address.")
+
+
+def _save_env_value(key: str, value: str) -> None:
+    text = ENV_FILE.read_text(encoding="utf-8")
+    ENV_FILE.write_text(set_env_line(text, key, value), encoding="utf-8")
+
+
+def _saved_portal_metadata(values: dict[str, str]) -> tuple[str, str]:
+    return (
+        _valid_public_portal_url(values.get("PUBLIC_REPORT_BASE_URL", "")),
+        _valid_github_repository(values.get("PUBLIC_PORTAL_GITHUB_REPOSITORY", "")),
+    )
 
 
 def _public_portal_health(url: str) -> bool:
@@ -417,6 +598,156 @@ def _public_portal_health(url: str) -> bool:
         return False
 
 
+def _wait_for_public_portal(url: str, seconds: int) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if _public_portal_health(url):
+            return True
+        remaining = max(0, int(deadline - time.monotonic()))
+        print(f"[LeadFlow] Waiting for Render portal health ({remaining}s remaining)...", flush=True)
+        time.sleep(min(10, max(1, remaining)))
+    return False
+
+
+def _confirm_phrase(prompt: str, expected: str) -> None:
+    while True:
+        response = input(prompt).strip()
+        if response.upper() == expected:
+            return
+        looks_sensitive = bool(_extract_postgresql_url(response)) or (
+            len(response) >= 24 and " " not in response
+        )
+        if looks_sensitive:
+            set_clipboard("")
+            raise SystemExit(
+                "A credential was entered into the confirmation prompt instead of the Render browser field. "
+                "Stop and rotate the exposed portal credentials before continuing."
+            )
+        print(f"Type {expected} exactly after completing the browser step.")
+
+
+def _render_secret_handoff(values: dict[str, str]) -> None:
+    database_url = values.get("DATABASE_URL", "")
+    app_secret = values.get("APP_SECRET", "")
+    if not database_url or len(app_secret) < 32:
+        raise SystemExit("DATABASE_URL or APP_SECRET is missing; Render setup stopped")
+
+    if not set_clipboard(database_url):
+        raise SystemExit("Could not copy DATABASE_URL to the system clipboard")
+    complete_browser_step(
+        "LeadFlow: paste DATABASE_URL into Render",
+        "DATABASE_URL is now on the clipboard.\n\n"
+        "1. Switch to Render's Environment page.\n"
+        "2. Click the DATABASE_URL VALUE field.\n"
+        "3. Press Ctrl+A, then Ctrl+V.\n"
+        "4. Return to this dialog and click OK.\n\n"
+        "Do not paste the value into PowerShell or chat.",
+        "DATABASE PASTED",
+    )
+    if not set_clipboard(app_secret):
+        raise SystemExit("Could not copy APP_SECRET to the system clipboard")
+    complete_browser_step(
+        "LeadFlow: paste APP_SECRET into Render",
+        "APP_SECRET is now on the clipboard.\n\n"
+        "1. Switch to Render's Environment page.\n"
+        "2. Click the APP_SECRET VALUE field.\n"
+        "3. Press Ctrl+A, then Ctrl+V.\n"
+        "4. Return to this dialog and click OK.\n\n"
+        "Do not paste the value into PowerShell or chat.",
+        "APP PASTED",
+    )
+    set_clipboard("")
+
+
+def _push_portal_repository(git: str, repository: Path) -> None:
+    """Update a dedicated remote branch while preserving its existing history."""
+    remote_has_main = subprocess.run(
+        [git, "ls-remote", "--exit-code", "--heads", "origin", "main"],
+        cwd=repository,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+    try:
+        if remote_has_main:
+            log("Existing GitHub main branch detected; preserving its history and applying the portal update.")
+            subprocess.check_call([git, "fetch", "origin", "main"], cwd=repository)
+            subprocess.check_call([git, "reset", "--soft", "origin/main"], cwd=repository)
+            if _git_capture(git, repository, "status", "--porcelain"):
+                subprocess.check_call(
+                    [git, "commit", "-m", "Update LeadFlow public report portal"],
+                    cwd=repository,
+                )
+        subprocess.check_call([git, "push", "--set-upstream", "origin", "main"], cwd=repository)
+    except subprocess.CalledProcessError:
+        raise SystemExit(
+            "GitHub synchronization failed. The existing remote was not deleted or force-pushed. "
+            "Confirm GitHub browser authorization, then rerun start.py --setup-free-portal."
+        ) from None
+
+
+def _setup_github_repository(args: argparse.Namespace, saved_url: str = "") -> str:
+    print("\nStep 2/4: Prepare and publish a private GitHub deployment repository.")
+    repository = _prepare_public_portal_repository()
+    git = shutil.which("git")
+    if not git:
+        open_or_print("https://git-scm.com/download/win", args.no_browser)
+        raise SystemExit("Install Git for Windows, then rerun the same start.py --setup-free-portal command")
+    if not (repository / ".git").exists():
+        try:
+            subprocess.check_call([git, "init", "-b", "main"], cwd=repository)
+        except subprocess.CalledProcessError:
+            subprocess.check_call([git, "init"], cwd=repository)
+            subprocess.check_call([git, "branch", "-M", "main"], cwd=repository)
+    subprocess.check_call([git, "config", "user.name", "LeadFlow Deployment"], cwd=repository)
+    subprocess.check_call([git, "config", "core.autocrlf", "false"], cwd=repository)
+    subprocess.check_call(
+        [git, "config", "user.email", "leadflow-deploy@users.noreply.github.com"],
+        cwd=repository,
+    )
+    subprocess.check_call([git, "add", "--all"], cwd=repository)
+    if _git_capture(git, repository, "status", "--porcelain"):
+        subprocess.check_call(
+            [git, "commit", "-m", "Deploy LeadFlow public report portal"],
+            cwd=repository,
+        )
+
+    repository_url = _valid_github_repository(saved_url)
+    if not repository_url:
+        try:
+            repository_url = _valid_github_repository(
+                _git_capture(git, repository, "remote", "get-url", "origin")
+            )
+        except subprocess.CalledProcessError:
+            repository_url = ""
+    if not repository_url:
+        print("GitHub repository status:")
+        print("  1. It already exists")
+        print("  2. Create a new private repository")
+        choice = input("Choose 1 or 2 [1]: ").strip() or "1"
+        if choice == "1":
+            open_or_print("https://github.com/", args.no_browser)
+            prompt = "Open the existing private repository, copy its HTTPS URL, then press Enter here: "
+        else:
+            open_or_print(
+                "https://github.com/new?name=leadflow-public-portal&visibility=private",
+                args.no_browser,
+            )
+            prompt = "Create it as PRIVATE, copy its HTTPS URL, then press Enter here: "
+        while not repository_url:
+            input(prompt)
+            repository_url = _valid_github_repository(clipboard_text())
+            if not repository_url:
+                print("The clipboard does not contain a valid https://github.com/OWNER/REPOSITORY URL.")
+
+    subprocess.run([git, "remote", "remove", "origin"], cwd=repository, check=False)
+    subprocess.check_call([git, "remote", "add", "origin", repository_url + ".git"], cwd=repository)
+    _save_env_value("PUBLIC_PORTAL_GITHUB_REPOSITORY", repository_url)
+    print("Git may open a browser for GitHub authorization. Complete that official login if prompted.")
+    _push_portal_repository(git, repository)
+    return repository_url
+
+
 def setup_free_public_portal(args: argparse.Namespace) -> dict[str, str]:
     """Interactive one-command setup; account consent remains in official browser pages."""
     log("Starting the free Render + Neon public portal setup wizard.")
@@ -424,7 +755,16 @@ def setup_free_public_portal(args: argparse.Namespace) -> dict[str, str]:
     print("You will authorize external accounts in their official browser pages and use the clipboard when prompted.\n")
 
     values = read_env()
+    if not values.get("DATABASE_URL", "").startswith("postgresql"):
+        recovered = recover_previous_postgresql_env(use_venv=not args.no_install)
+        if recovered:
+            values = read_env()
     if not _is_neon_database(values):
+        if not values.get("DATABASE_URL", "").startswith("postgresql"):
+            raise SystemExit(
+                "No reachable PostgreSQL configuration was found in this or a previous extracted LeadFlow folder. "
+                "Keep the previous folder in Downloads and rerun this wizard so start.py can recover its .env."
+            )
         print("Step 1/4: Create a free Neon project and copy its DIRECT connection string.")
         open_or_print("https://console.neon.tech/app/projects", args.no_browser)
         python = str(project_python(use_venv=not args.no_install))
@@ -445,66 +785,46 @@ def setup_free_public_portal(args: argparse.Namespace) -> dict[str, str]:
     else:
         log("Neon DATABASE_URL is already configured; data migration is not repeated.")
 
-    print("\nStep 2/4: Prepare and publish a private GitHub deployment repository.")
-    repository = _prepare_public_portal_repository()
-    git = shutil.which("git")
-    if not git:
-        open_or_print("https://git-scm.com/download/win", args.no_browser)
-        raise SystemExit("Install Git for Windows, then rerun the same start.py --setup-free-portal command")
-    if not (repository / ".git").exists():
-        try:
-            subprocess.check_call([git, "init", "-b", "main"], cwd=repository)
-        except subprocess.CalledProcessError:
-            subprocess.check_call([git, "init"], cwd=repository)
-            subprocess.check_call([git, "branch", "-M", "main"], cwd=repository)
-    subprocess.check_call([git, "config", "user.name", "LeadFlow Deployment"], cwd=repository)
-    subprocess.check_call(
-        [git, "config", "user.email", "leadflow-deploy@users.noreply.github.com"],
-        cwd=repository,
-    )
-    subprocess.check_call([git, "add", "--all"], cwd=repository)
-    if _git_capture(git, repository, "status", "--porcelain"):
-        subprocess.check_call(
-            [git, "commit", "-m", "Deploy LeadFlow public report portal"],
-            cwd=repository,
-        )
-
-    try:
-        repository_url = _valid_github_repository(_git_capture(git, repository, "remote", "get-url", "origin"))
-    except subprocess.CalledProcessError:
-        repository_url = ""
-    if not repository_url:
-        open_or_print(
-            "https://github.com/new?name=leadflow-public-portal&visibility=private",
-            args.no_browser,
-        )
-        while not repository_url:
-            input(
-                "Create the repository as PRIVATE, copy its HTTPS URL in the browser, then press Enter here: "
-            )
-            repository_url = _valid_github_repository(clipboard_text())
-            if not repository_url:
-                print("The clipboard does not contain a valid https://github.com/OWNER/REPOSITORY URL.")
-        subprocess.run([git, "remote", "remove", "origin"], cwd=repository, check=False)
-        subprocess.check_call([git, "remote", "add", "origin", repository_url + ".git"], cwd=repository)
-    print("Git may open a browser for GitHub authorization. Complete that official login if prompted.")
-    subprocess.check_call([git, "push", "--set-upstream", "origin", "main"], cwd=repository)
-
     values = read_env()
-    portal_url = values.get("PUBLIC_REPORT_BASE_URL", "").strip().rstrip("/")
-    try:
-        existing_portal = urlparse(portal_url)
-    except ValueError:
-        existing_portal = urlparse("")
-    portal_is_configured = bool(
-        existing_portal.scheme == "https"
-        and existing_portal.hostname
-        and "yourdomain" not in existing_portal.hostname
-    )
+    raw_report_url = values.get("PUBLIC_REPORT_BASE_URL", "")
+    portal_url, repository_url = _saved_portal_metadata(values)
+    portal_is_configured = bool(portal_url)
+    render_service_exists = portal_is_configured or _is_render_dashboard_url(raw_report_url)
+    if render_service_exists:
+        print("\nStep 2/4: GitHub repository setup is already complete; skipping it.")
+        if repository_url:
+            print(f"  {repository_url}")
+    else:
+        repository_url = _setup_github_repository(args, repository_url)
+        values = read_env()
 
-    if portal_is_configured:
-        print("\nStep 3/4: The existing Render portal will auto-deploy the pushed update.")
+    portal_is_healthy = portal_is_configured and _wait_for_public_portal(portal_url, 60)
+    if portal_is_configured and portal_is_healthy:
+        print("\nStep 3/4: The existing healthy Render portal will auto-deploy the pushed update.")
         print(f"  {portal_url}")
+    elif render_service_exists:
+        print("\nStep 3/4: Repair the existing Render portal environment.")
+        if portal_url:
+            print(f"  Existing portal is not healthy: {portal_url}")
+        else:
+            print("  The saved URL is a Render dashboard address, not the public service URL.")
+        open_or_print("https://dashboard.render.com/", args.no_browser)
+        complete_browser_step(
+            "LeadFlow: open the existing Render service",
+            "In Render, open leadflow-report-portal, select Environment, and click Edit.\n\n"
+            "Return to this dialog and click OK when the value fields are editable.",
+            "ENVIRONMENT READY",
+        )
+        _render_secret_handoff(values)
+        complete_browser_step(
+            "LeadFlow: redeploy the portal",
+            "In Render, click Save Changes / Save and Deploy.\n\n"
+            "Return to this dialog and click OK after deployment starts.",
+            "DEPLOY STARTED",
+        )
+        if not portal_url:
+            print("\nStep 4/4: Save the actual public web-service URL.")
+            portal_url = _read_public_portal_url_from_clipboard()
     else:
         print("\nStep 3/4: Deploy the Render Blueprint.")
         blueprint_url = "https://dashboard.render.com/blueprint/new?repo=" + urlquote(
@@ -512,50 +832,112 @@ def setup_free_public_portal(args: argparse.Namespace) -> dict[str, str]:
             safe="",
         )
         open_or_print(blueprint_url, args.no_browser)
-        database_url = values.get("DATABASE_URL", "")
-        app_secret = values.get("APP_SECRET", "")
-        if not database_url or len(app_secret) < 32:
-            raise SystemExit("DATABASE_URL or APP_SECRET is missing; Render setup stopped")
-
-        input("When Render shows the DATABASE_URL field, press Enter here to copy its value securely: ")
-        if not set_clipboard(database_url):
-            raise SystemExit("Could not copy DATABASE_URL to the system clipboard")
-        input("Paste into Render's DATABASE_URL field, then press Enter here: ")
-        if not set_clipboard(app_secret):
-            raise SystemExit("Could not copy APP_SECRET to the system clipboard")
-        input("Paste into Render's APP_SECRET field, click Deploy Blueprint, then press Enter here: ")
-        set_clipboard("")
+        _render_secret_handoff(values)
+        complete_browser_step(
+            "LeadFlow: deploy the Render Blueprint",
+            "In Render, click Deploy Blueprint.\n\n"
+            "Return to this dialog and click OK after deployment starts.",
+            "DEPLOY STARTED",
+        )
 
         print("\nStep 4/4: Connect local report links to the deployed portal.")
-        while not portal_url:
-            input("When Render shows the service as Live, copy its HTTPS service URL and press Enter here: ")
-            candidate = clipboard_text().strip().rstrip("/")
-            try:
-                parsed = urlparse(candidate)
-            except ValueError:
-                parsed = urlparse("")
-            if parsed.scheme == "https" and parsed.hostname and "github.com" not in parsed.hostname:
-                portal_url = candidate
-            else:
-                print("The clipboard does not contain a valid public HTTPS service URL.")
+        portal_url = _read_public_portal_url_from_clipboard()
 
+    if portal_url and portal_url != _valid_public_portal_url(raw_report_url):
         backup = ROOT / ".env.before-public-portal"
         if not backup.exists():
             shutil.copy2(ENV_FILE, backup)
-        env_text = ENV_FILE.read_text(encoding="utf-8")
-        env_text = set_env_line(env_text, "PUBLIC_REPORT_BASE_URL", portal_url)
-        env_text = set_env_line(env_text, "SENDING_ENABLED", "false")
-        ENV_FILE.write_text(env_text, encoding="utf-8")
+        _save_env_value("PUBLIC_REPORT_BASE_URL", portal_url)
+        _save_env_value("SENDING_ENABLED", "false")
         set_clipboard("")
 
-    log("Waiting for the public portal health check. Free services can take several minutes to deploy.")
-    if not _public_portal_health(portal_url):
-        print("The portal URL was saved, but its health check is not ready yet.")
-        print("Review the Render deployment logs, then rerun this wizard to validate it.")
+    if not portal_is_healthy:
+        log("Waiting for the public portal health check. Free services can take several minutes to deploy.")
+        portal_is_healthy = _wait_for_public_portal(portal_url, 600)
+    if not portal_is_healthy:
+        print("The portal URL is saved, but its health check is still unavailable.")
+        print("Review the Render deployment logs, then rerun this wizard; it will enter repair mode again.")
     else:
         log("Public portal is online and connected to Neon.")
         open_or_print(portal_url, args.no_browser)
     print("SENDING_ENABLED remains false. Test report, click, and opt-out routes before enabling it.\n")
+    return read_env()
+
+
+def rotate_public_portal_credentials(args: argparse.Namespace) -> dict[str, str]:
+    """Rotate credentials after accidental disclosure, without shell-pasting them."""
+    log("Starting emergency Neon password and public-portal secret rotation.")
+    values = read_env()
+    previous_database_url = values.get("DATABASE_URL", "")
+    if not _is_neon_database(values):
+        raise SystemExit("Credential rotation requires an existing Neon DATABASE_URL")
+
+    print("In Neon, open the project, click Connect, choose the current role, and click Reset password.")
+    print("Then turn Connection pooling OFF and copy the new Direct connection string.")
+    open_or_print("https://console.neon.tech/app/projects", args.no_browser)
+    new_database_url = ""
+    while not new_database_url:
+        message = (
+            "In Neon, reset the current role password, turn Connection pooling OFF, and copy the NEW "
+            "Direct connection string.\n\nReturn to this dialog and click OK after copying it."
+        )
+        if not show_instruction_dialog("LeadFlow: copy the rotated Neon URL", message):
+            input(message + " Then press Enter here: ")
+        candidate, error = _validated_direct_neon_url(clipboard_text())
+        if not candidate:
+            print(f"Not ready: {error}")
+            continue
+        if candidate == previous_database_url:
+            print("The copied URL is unchanged. Reset the Neon role password first, then copy the new URL.")
+            continue
+        new_database_url = candidate
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup = ROOT / f".env.before-credential-rotation-{stamp}"
+    shutil.copy2(ENV_FILE, backup)
+    new_app_secret = secrets.token_urlsafe(48)
+    env_text = ENV_FILE.read_text(encoding="utf-8")
+    env_text = set_env_line(env_text, "DATABASE_URL", new_database_url)
+    env_text = set_env_line(env_text, "APP_SECRET", new_app_secret)
+    env_text = set_env_line(env_text, "SENDING_ENABLED", "false")
+    ENV_FILE.write_text(env_text, encoding="utf-8")
+    with suppress(OSError):
+        ENV_FILE.chmod(0o600)
+    set_clipboard("")
+
+    print("The local Neon URL and APP_SECRET have been rotated. Existing signed report links are now invalid.")
+    print("Now update the existing Render service with the new values.")
+    open_or_print("https://dashboard.render.com/", args.no_browser)
+    complete_browser_step(
+        "LeadFlow: open the existing Render service",
+        "In Render, open leadflow-report-portal → Environment → Edit.\n\n"
+        "Return to this dialog and click OK when the fields are editable.",
+        "ENVIRONMENT READY",
+    )
+    rotated_values = read_env()
+    _render_secret_handoff(rotated_values)
+    complete_browser_step(
+        "LeadFlow: deploy rotated credentials",
+        "In Render, click Save Changes / Save and Deploy.\n\n"
+        "Return to this dialog and click OK after deployment starts.",
+        "DEPLOY STARTED",
+    )
+
+    raw_portal_url = rotated_values.get("PUBLIC_REPORT_BASE_URL", "")
+    portal_url = _valid_public_portal_url(raw_portal_url)
+    if not portal_url:
+        print("Copy the actual public service URL after Render shows the service as Live.")
+        portal_url = _read_public_portal_url_from_clipboard()
+        _save_env_value("PUBLIC_REPORT_BASE_URL", portal_url)
+    set_clipboard("")
+
+    log("Waiting for the rotated Render portal to become healthy.")
+    if not _wait_for_public_portal(portal_url, 600):
+        print("Credential rotation was saved, but Render is not healthy yet. Review its deploy logs.")
+    else:
+        log("Credential rotation completed and the public portal is healthy.")
+        open_or_print(portal_url, args.no_browser)
+    print(f"Previous local settings were backed up as {backup.name}. Keep that file private.")
     return read_env()
 
 
@@ -906,6 +1288,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run the one-command Neon + private GitHub + Render public-portal wizard",
     )
+    parser.add_argument(
+        "--rotate-portal-credentials",
+        action="store_true",
+        help="Rotate Neon password and APP_SECRET after accidental disclosure, then repair Render",
+    )
     parser.add_argument("--skip-migrations", action="store_true", help="Do not automatically run Alembic for local PostgreSQL")
     parser.add_argument("--skip-local-ai", "--skip-ollama", dest="skip_local_ai", action="store_true", help="Do not start/check the selected local AI runtime in non-Docker mode")
     parser.add_argument("--skip-model-pull", action="store_true", help="Do not run ollama pull in non-Docker mode")
@@ -918,8 +1305,11 @@ def main() -> int:
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
-    if args.setup_free_portal and (args.docker or args.preflight or args.install_only):
-        parser.error("--setup-free-portal is a local interactive setup and cannot be combined with Docker/preflight/install-only")
+    if args.setup_free_portal and args.rotate_portal_credentials:
+        parser.error("Choose either --setup-free-portal or --rotate-portal-credentials, not both")
+    interactive_portal = args.setup_free_portal or args.rotate_portal_credentials
+    if interactive_portal and (args.docker or args.preflight or args.install_only):
+        parser.error("Portal setup/rotation is local and cannot be combined with Docker/preflight/install-only")
     os.chdir(ROOT)
     file_values, generated_password = ensure_env_file()
     if args.ai_runtime is None:
@@ -937,6 +1327,9 @@ def main() -> int:
         install_python_requirements(args.force_install)
     if args.browser_audit:
         install_playwright_browser(use_venv=not args.no_install)
+    if args.rotate_portal_credentials:
+        file_values = rotate_public_portal_credentials(args)
+        return run_local(args, file_values, generated_password)
     if args.setup_free_portal:
         file_values = setup_free_public_portal(args)
         return run_local(args, file_values, generated_password)

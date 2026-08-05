@@ -107,7 +107,7 @@ async def lifespan(_app: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title=settings.app_name, version="1.2.2", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="1.2.9", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.app_secret,

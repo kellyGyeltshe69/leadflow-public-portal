@@ -83,7 +83,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="LeadFlow Public Report Portal",
-    version="1.2.2",
+    version="1.2.9",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,

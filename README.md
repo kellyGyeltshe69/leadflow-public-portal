@@ -25,11 +25,21 @@ Run only:
 python .\start.py --setup-free-portal
 ```
 
-The wizard opens the official Neon, GitHub, and Render browser pages; reads copied URLs from the clipboard; migrates PostgreSQL to Neon; creates a sanitized deployment repository; commits and pushes it to the private GitHub repository; securely copies only `DATABASE_URL` and `APP_SECRET` for Render; saves `PUBLIC_REPORT_BASE_URL`; validates portal health; and then starts local LeadFlow. You do not paste secrets or connection strings into PowerShell.
+The wizard opens the official Neon, GitHub, and Render browser pages; reads copied URLs from the clipboard; migrates PostgreSQL to Neon; creates a sanitized deployment repository; commits and pushes it to the private GitHub repository; securely copies only `DATABASE_URL` and `APP_SECRET` for Render; saves `PUBLIC_REPORT_BASE_URL`; validates portal health; and then starts local LeadFlow. Existing GitHub `main` history is fetched and preserved before updates, so reruns never require a manual pull or force push. On Windows, topmost graphical dialogs guide each Render paste and deploy action—no secret or confirmation text is entered into PowerShell. If a clean extracted folder has a new SQLite `.env`, the wizard scans sibling LeadFlow release folders, selects the newest reachable PostgreSQL/Neon configuration, backs up the temporary file, and recovers it automatically without printing values.
 
-External providers still require you to create/authorize their accounts and click their consent/deploy buttons in the browser. `start.py` cannot legally accept third-party terms or authorize an account on your behalf. If Git for Windows is missing, the wizard opens its official installer page; install it and rerun the same command.
+External providers still require you to create/authorize their accounts and click their consent/deploy buttons in the browser. `start.py` cannot legally accept third-party terms or authorize an account on your behalf. If Git for Windows is missing, the wizard opens its official installer page; install it and rerun the same command. Completed steps are resumable: a configured portal skips GitHub entirely, and an incomplete setup asks whether the GitHub repository already exists before offering to create another. If an existing Render service is unhealthy, the wizard goes directly to environment repair, recopies both values in an enforced order, triggers redeployment, and waits for `/health`. Only the public root service URL such as `https://leadflow-report-portal.onrender.com` is accepted; `dashboard.render.com/blueprint/...` addresses are detected and replaced rather than used in customer links.
 
 The remaining sections document what the wizard performs and provide recovery details.
+
+## Emergency credential rotation
+
+If a Neon connection string or `APP_SECRET` is ever pasted into chat, a ticket, terminal confirmation prompt, screenshot, or another untrusted location, treat it as compromised. Stop the wizard and run:
+
+```powershell
+python .\start.py --rotate-portal-credentials
+```
+
+The rotation wizard opens Neon so you can click **Reset password**, reads the newly copied Direct URL without shell pasting, refuses an unchanged URL, generates a new local `APP_SECRET`, updates only the existing Render service in an enforced order, replaces any dashboard URL with the actual public service origin, waits for health, and starts LeadFlow. Existing signed report and unsubscribe links become invalid, which is expected after rotating `APP_SECRET`.
 
 ## 1. Create the Neon database
 
