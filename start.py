@@ -313,7 +313,10 @@ def project_python(use_venv: bool = True) -> Path:
     candidate = venv_python()
     if use_venv and candidate.exists():
         return candidate.resolve()
-    return Path(sys.executable).resolve()
+    # Do not resolve the active interpreter symlink. Render and many Unix
+    # platforms expose a virtualenv Python symlink whose resolved base binary
+    # does not include the deployed virtualenv's site-packages.
+    return Path(sys.executable).absolute()
 
 
 def install_playwright_browser(use_venv: bool = True) -> None:
@@ -789,7 +792,11 @@ def setup_free_public_portal(args: argparse.Namespace) -> dict[str, str]:
     raw_report_url = values.get("PUBLIC_REPORT_BASE_URL", "")
     portal_url, repository_url = _saved_portal_metadata(values)
     portal_is_configured = bool(portal_url)
-    render_service_exists = portal_is_configured or _is_render_dashboard_url(raw_report_url)
+    render_service_exists = (
+        portal_is_configured
+        or _is_render_dashboard_url(raw_report_url)
+        or values.get("PUBLIC_PORTAL_RENDER_SERVICE_EXISTS", "false").lower() == "true"
+    )
     if render_service_exists:
         print("\nStep 2/4: GitHub repository setup is already complete; skipping it.")
         if repository_url:
@@ -848,6 +855,7 @@ def setup_free_public_portal(args: argparse.Namespace) -> dict[str, str]:
         if not backup.exists():
             shutil.copy2(ENV_FILE, backup)
         _save_env_value("PUBLIC_REPORT_BASE_URL", portal_url)
+        _save_env_value("PUBLIC_PORTAL_RENDER_SERVICE_EXISTS", "true")
         _save_env_value("SENDING_ENABLED", "false")
         set_clipboard("")
 
@@ -929,6 +937,7 @@ def rotate_public_portal_credentials(args: argparse.Namespace) -> dict[str, str]
         print("Copy the actual public service URL after Render shows the service as Live.")
         portal_url = _read_public_portal_url_from_clipboard()
         _save_env_value("PUBLIC_REPORT_BASE_URL", portal_url)
+    _save_env_value("PUBLIC_PORTAL_RENDER_SERVICE_EXISTS", "true")
     set_clipboard("")
 
     log("Waiting for the rotated Render portal to become healthy.")
@@ -938,6 +947,86 @@ def rotate_public_portal_credentials(args: argparse.Namespace) -> dict[str, str]
         log("Credential rotation completed and the public portal is healthy.")
         open_or_print(portal_url, args.no_browser)
     print(f"Previous local settings were backed up as {backup.name}. Keep that file private.")
+    return read_env()
+
+
+def update_public_portal_source(args: argparse.Namespace) -> dict[str, str]:
+    """Push the current sanitized portal source to the existing private repository."""
+    log("Updating the existing public-portal source repository (no secrets are changed).")
+    values = read_env()
+    if not values.get("DATABASE_URL", "").startswith("postgresql"):
+        recovered = recover_previous_postgresql_env(use_venv=not args.no_install)
+        if recovered:
+            values = read_env()
+    repository_url = _valid_github_repository(
+        values.get("PUBLIC_PORTAL_GITHUB_REPOSITORY", "")
+    )
+    repository_url = _setup_github_repository(args, repository_url)
+    _save_env_value("PUBLIC_PORTAL_GITHUB_REPOSITORY", repository_url)
+    open_or_print("https://dashboard.render.com/", args.no_browser)
+    portal_url = _valid_public_portal_url(values.get("PUBLIC_REPORT_BASE_URL", ""))
+    if portal_url:
+        log("Waiting for Render's automatic deploy of the updated portal source.")
+        if _wait_for_public_portal(portal_url, 600):
+            log("Updated public portal is healthy.")
+            open_or_print(portal_url, args.no_browser)
+        else:
+            print("The source was pushed, but the portal is not healthy yet. Check Render's latest deploy logs.")
+    else:
+        print("Source update pushed. Open the existing leadflow-report-portal service and monitor its deploy.")
+    return read_env()
+
+
+def repair_existing_render_portal(args: argparse.Namespace) -> dict[str, str]:
+    """Repair only the existing Render service; never touch Neon or GitHub state."""
+    log("Starting existing Render portal repair (Neon and GitHub are skipped).")
+    values = read_env()
+    if not values.get("DATABASE_URL", "").startswith("postgresql"):
+        recovered = recover_previous_postgresql_env(use_venv=not args.no_install)
+        if recovered:
+            values = read_env()
+    if not _is_neon_database(values):
+        raise SystemExit(
+            "No reachable Neon configuration was found. Keep the previous LeadFlow folders in Downloads "
+            "and rerun --repair-render-portal."
+        )
+    if len(values.get("APP_SECRET", "")) < 32:
+        raise SystemExit("APP_SECRET is missing or too short; Render repair stopped")
+
+    open_or_print("https://dashboard.render.com/", args.no_browser)
+    complete_browser_step(
+        "LeadFlow: open the existing Render service",
+        "In Render, open the EXISTING leadflow-report-portal service.\n"
+        "Select Environment and click Edit.\n\n"
+        "Do not create another Blueprint or service. Return here and click OK when the fields are editable.",
+        "ENVIRONMENT READY",
+    )
+    _render_secret_handoff(values)
+    complete_browser_step(
+        "LeadFlow: redeploy the existing portal",
+        "In Render, click Save Changes / Save and Deploy on the EXISTING service.\n\n"
+        "Return here and click OK after deployment starts.",
+        "DEPLOY STARTED",
+    )
+
+    raw_portal_url = values.get("PUBLIC_REPORT_BASE_URL", "")
+    portal_url = _valid_public_portal_url(raw_portal_url)
+    if not portal_url:
+        portal_url = _read_public_portal_url_from_clipboard()
+    backup = ROOT / ".env.before-render-repair"
+    if not backup.exists():
+        shutil.copy2(ENV_FILE, backup)
+    _save_env_value("PUBLIC_REPORT_BASE_URL", portal_url)
+    _save_env_value("PUBLIC_PORTAL_RENDER_SERVICE_EXISTS", "true")
+    _save_env_value("SENDING_ENABLED", "false")
+    set_clipboard("")
+
+    log("Waiting for the existing Render portal to become healthy.")
+    if not _wait_for_public_portal(portal_url, 600):
+        print("Render is still unhealthy. No new service was created; review the existing service's deploy logs.")
+    else:
+        log("Existing Render portal is healthy and connected to Neon.")
+        open_or_print(portal_url, args.no_browser)
     return read_env()
 
 
@@ -1293,6 +1382,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Rotate Neon password and APP_SECRET after accidental disclosure, then repair Render",
     )
+    parser.add_argument(
+        "--repair-render-portal",
+        action="store_true",
+        help="Repair only the existing Render service; skip Neon migration and GitHub setup",
+    )
+    parser.add_argument(
+        "--update-public-portal",
+        action="store_true",
+        help="Push updated public-portal code to the existing GitHub repository without changing secrets",
+    )
     parser.add_argument("--skip-migrations", action="store_true", help="Do not automatically run Alembic for local PostgreSQL")
     parser.add_argument("--skip-local-ai", "--skip-ollama", dest="skip_local_ai", action="store_true", help="Do not start/check the selected local AI runtime in non-Docker mode")
     parser.add_argument("--skip-model-pull", action="store_true", help="Do not run ollama pull in non-Docker mode")
@@ -1305,11 +1404,19 @@ def main() -> int:
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
-    if args.setup_free_portal and args.rotate_portal_credentials:
-        parser.error("Choose either --setup-free-portal or --rotate-portal-credentials, not both")
-    interactive_portal = args.setup_free_portal or args.rotate_portal_credentials
-    if interactive_portal and (args.docker or args.preflight or args.install_only):
-        parser.error("Portal setup/rotation is local and cannot be combined with Docker/preflight/install-only")
+    portal_actions = sum(
+        bool(value)
+        for value in (
+            args.setup_free_portal,
+            args.rotate_portal_credentials,
+            args.repair_render_portal,
+            args.update_public_portal,
+        )
+    )
+    if portal_actions > 1:
+        parser.error("Choose only one portal setup, repair, or credential-rotation action")
+    if portal_actions and (args.docker or args.preflight or args.install_only):
+        parser.error("Portal setup/repair is local and cannot be combined with Docker/preflight/install-only")
     os.chdir(ROOT)
     file_values, generated_password = ensure_env_file()
     if args.ai_runtime is None:
@@ -1327,6 +1434,12 @@ def main() -> int:
         install_python_requirements(args.force_install)
     if args.browser_audit:
         install_playwright_browser(use_venv=not args.no_install)
+    if args.update_public_portal:
+        file_values = update_public_portal_source(args)
+        return run_local(args, file_values, generated_password)
+    if args.repair_render_portal:
+        file_values = repair_existing_render_portal(args)
+        return run_local(args, file_values, generated_password)
     if args.rotate_portal_credentials:
         file_values = rotate_public_portal_credentials(args)
         return run_local(args, file_values, generated_password)

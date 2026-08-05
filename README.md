@@ -31,6 +31,26 @@ External providers still require you to create/authorize their accounts and clic
 
 The remaining sections document what the wizard performs and provide recovery details.
 
+## Update portal source after a code-only deployment failure
+
+If Render builds successfully but reports a missing installed Python module at startup, update only the existing private source repository:
+
+```powershell
+python .\start.py --update-public-portal
+```
+
+This command preserves remote Git history, changes no Neon/Render secrets, pushes the corrected source, opens Render, and waits for an automatic redeploy when a valid public URL is already configured.
+
+## Repair an existing failed Render service
+
+If `leadflow-report-portal` already exists (even with **Failed deploy**), do not create another Blueprint. Run:
+
+```powershell
+python .\start.py --repair-render-portal
+```
+
+This path skips Neon and GitHub, opens only the existing Render service, hands off the current local `DATABASE_URL` and `APP_SECRET` through Windows dialogs, triggers **Save and Deploy**, replaces any saved dashboard URL with the actual `.onrender.com` origin, and waits for `/health`.
+
 ## Emergency credential rotation
 
 If a Neon connection string or `APP_SECRET` is ever pasted into chat, a ticket, terminal confirmation prompt, screenshot, or another untrusted location, treat it as compromised. Stop the wizard and run:
