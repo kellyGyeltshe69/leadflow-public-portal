@@ -9,7 +9,7 @@ This mode keeps discovery, website auditing, Ollama, Gmail, and the administrato
 /unsubscribe/{legacy-token}  # backward compatibility
 ```
 
-Both local LeadFlow and the hosted portal use the same Neon PostgreSQL database and the same `APP_SECRET`. That makes report links, click records, and opt-outs immediately visible to the local application without exposing Composio or Gmail credentials to Render.
+Both local LeadFlow and the hosted portal use the same Neon PostgreSQL database and the same `APP_SECRET`. That makes report links, click records, and opt-outs immediately visible to the local application without exposing Composio or Gmail credentials to Render. The public report uses a responsive professional layout with an executive summary, bounded score dimensions, severity findings, action plan, selected non-sensitive technical facts, optional disclosed hosting comparison and print styling.
 
 ## Important free-tier limitations
 

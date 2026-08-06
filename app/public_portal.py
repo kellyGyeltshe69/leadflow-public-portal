@@ -21,6 +21,7 @@ from .security import (
 )
 from .services.affiliate import AffiliateService
 from .services.compat_sync import sync_business_from_legacy, sync_email_from_legacy
+from .services.public_report import build_public_report
 from .utils import normalize_email
 
 settings = get_settings()
@@ -83,7 +84,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="LeadFlow Public Report Portal",
-    version="1.5.0",
+    version="1.6.0",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
@@ -150,6 +151,7 @@ def public_audit_landing(request: Request, token: str):
             raise HTTPException(404, "Report is not published")
         lead, business, landing = resolved
         content = dict(landing.content or {})
+        report = build_public_report(lead, business, landing, content)
     response = templates.TemplateResponse(
         request=request,
         name="landing.html",
@@ -159,6 +161,7 @@ def public_audit_landing(request: Request, token: str):
             "business": business,
             "landing": landing,
             "content": content,
+            "report": report,
             "token": token,
             "unsubscribe_token": unsubscribe_token(lead.id),
             "sender_name": settings.sender_name,

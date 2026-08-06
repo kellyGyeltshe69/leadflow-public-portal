@@ -75,6 +75,7 @@ from .services.affiliate import AffiliateService
 from .services.audit_log import record_log
 from .services.compat_sync import sync_business_from_legacy, sync_email_from_legacy
 from .services.outreach_refresh import refresh_unsent_outreach_links
+from .services.public_report import build_public_report
 from .workers.queue import dispatch_job
 
 configure_logging(json_logs=True)
@@ -131,7 +132,7 @@ async def lifespan(_app: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title=settings.app_name, version="1.5.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="1.6.0", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.app_secret,
@@ -376,6 +377,7 @@ def public_audit_landing(request: Request, token: str):
             raise HTTPException(404, "Report is not published")
         lead, business, landing = resolved
         content = dict(landing.content or {})
+        report = build_public_report(lead, business, landing, content)
     response = templates.TemplateResponse(
         request=request,
         name="landing.html",
@@ -385,6 +387,7 @@ def public_audit_landing(request: Request, token: str):
             "business": business,
             "landing": landing,
             "content": content,
+            "report": report,
             "token": token,
             "unsubscribe_token": unsubscribe_token(lead.id),
             "sender_name": settings.sender_name,
