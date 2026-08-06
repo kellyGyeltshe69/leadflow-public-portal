@@ -9,7 +9,7 @@ AFFILIATE_STAGES = {0, 2}
 
 def unsubscribe_url(lead: Lead) -> str:
     settings = get_settings()
-    return f"{settings.report_base_url}/unsubscribe/{unsubscribe_token(lead.id)}"
+    return f"{settings.report_base_url}/u/{unsubscribe_token(lead.id)}"
 
 
 def landing_url(lead: Lead) -> str:
@@ -19,9 +19,9 @@ def landing_url(lead: Lead) -> str:
 
 def compose_final_body(lead: Lead, message: Message, allow_postal_placeholder: bool = False) -> str:
     settings = get_settings()
-    postal = settings.physical_postal_address.strip()
+    postal = settings.physical_postal_address.strip() if settings.postal_ready else ""
     if not postal and allow_postal_placeholder:
-        postal = "[VALID POSTAL ADDRESS REQUIRED BEFORE SENDING]"
+        postal = "[VALID POSTAL ADDRESS AND ATTESTATION REQUIRED BEFORE SENDING]"
     affiliate_section = ""
     if message.stage in AFFILIATE_STAGES:
         affiliate_section = (

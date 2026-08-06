@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
 from .config import get_settings
+from .services.email_quality import review_email_bundle
 
 log = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class DraftBundle:
     opportunity: str
     checklist: list[str]
     messages: list[dict]
+    quality_review: dict[str, object] = field(default_factory=dict)
 
 
 def _clean_json(text: str) -> dict:
@@ -27,13 +29,42 @@ def _clean_json(text: str) -> dict:
     return json.loads(text)
 
 
+def _email_safe_issue(issue: str) -> str:
+    issue = " ".join(str(issue).split()).strip()
+    slow = re.search(r"slow server response \((\d+) ms\)", issue, re.IGNORECASE)
+    if slow:
+        seconds = int(slow.group(1)) / 1000
+        return (
+            f"The homepage response took about {seconds:.1f} seconds from the audit server "
+            "during that check."
+        )
+    images = re.search(r"found (\d+) image\(s\) larger than 500 KB", issue, re.IGNORECASE)
+    if images:
+        count = int(images.group(1))
+        noun = "image" if count == 1 else "images"
+        return f"The homepage sample found {count} {noun} reporting file sizes above 500 KB."
+    if "did not expose a meta description" in issue.lower():
+        return (
+            "The homepage did not expose a meta description, which can affect how its "
+            "search-result snippet is presented."
+        )
+    if "no mobile viewport" in issue.lower():
+        return "The homepage HTML did not expose a mobile viewport tag."
+    return re.sub(r";?\s*retest before using this claim\.?$", ".", issue, flags=re.IGNORECASE)
+
+
 def _fallback(business: dict) -> DraftBundle:
     name = business["business_name"]
     city_state = ", ".join(x for x in [business.get("city"), business.get("state")] if x)
     issues = business.get("issues") or ["No clear independent website was verified."]
-    primary_issue = issues[0]
+    safe_issues = [_email_safe_issue(str(issue)) for issue in issues]
+    primary_issue = safe_issues[0]
     opportunity = business.get("opportunity") or "Create a simple first-party page with current business details and a clear inquiry path."
-    fact = f"I reviewed the public online path for {name}{' in ' + city_state if city_state else ''}. {primary_issue}"
+    second_issue = safe_issues[1] if len(safe_issues) > 1 else ""
+    observation = " ".join(item.strip() for item in [primary_issue, second_issue] if item).strip()
+    observation = observation[:320].rstrip()
+    practical_step = (opportunity.split(".", 1)[0].strip() + ".")[:180]
+    location_note = f" in {city_state}" if city_state else ""
     checklist = [
         "Confirm the current business name, address, hours and contact details.",
         "Put the most common customer action near the top of the page.",
@@ -41,13 +72,56 @@ def _fallback(business: dict) -> DraftBundle:
         "Use a short inquiry form that asks only for details needed to respond.",
         "Test every link on a phone before publishing.",
     ]
+    subject = "Two website observations"
     messages = [
-        {"stage": 0, "subject": f"One website suggestion for {name}", "body_core": f"Hi {name} team,\n\n{fact}\n\n{opportunity}\n\nIf useful, I can send a free five-point page checklist based on those public details. Would you like it?"},
-        {"stage": 1, "subject": f"One website suggestion for {name}", "body_core": f"Hi {name} team,\n\nOne practical follow-up: start with the single customer action that matters most, then add only the information needed to complete it.\n\nWould a short section outline help?"},
-        {"stage": 2, "subject": f"One website suggestion for {name}", "body_core": f"Hi {name} team,\n\nA simple first version could cover: current details, core services, proof, and one inquiry action. It does not need to be a large site.\n\nWould you like the copy-ready checklist?"},
-        {"stage": 3, "subject": f"One website suggestion for {name}", "body_core": f"Hi {name} team,\n\nI am closing the loop after this note. The suggestion was based only on your public online presence: {primary_issue}\n\nNo reply is needed if this is not a priority, and I will not follow up again."},
+        {
+            "stage": 0,
+            "subject": subject,
+            "body_core": (
+                f"Hi {name} team,\n\n"
+                f"During a recent point-in-time review of your public website{location_note}, "
+                f"I noted the following: {observation}\n\n"
+                f"One practical first step: {practical_step}\n\n"
+                "I summarized the observations and a short checklist in the report linked below."
+            ),
+        },
+        {
+            "stage": 1,
+            "subject": subject,
+            "body_core": (
+                f"Hi {name} team,\n\n"
+                "One practical follow-up: start with the single customer action that matters most, "
+                "then keep only the information needed to complete it.\n\n"
+                "Would a short implementation order be useful?"
+            ),
+        },
+        {
+            "stage": 2,
+            "subject": subject,
+            "body_core": (
+                f"Hi {name} team,\n\n"
+                "A focused first pass can cover current details, core services, proof, and one inquiry action. "
+                "I kept the hosted report available below so the verified observations stay in one place."
+            ),
+        },
+        {
+            "stage": 3,
+            "subject": subject,
+            "body_core": (
+                f"Hi {name} team,\n\n"
+                "I am closing the loop after this note. The suggestion was based only on the public website "
+                "observations in the report. No reply is needed if this is not a priority, and I will not follow up again."
+            ),
+        },
     ]
-    return DraftBundle(f"Public review found: {primary_issue}", opportunity, checklist, messages)
+    bundle = DraftBundle(
+        f"Public review found: {primary_issue}",
+        opportunity,
+        checklist,
+        messages,
+    )
+    bundle.quality_review = review_email_bundle(name, messages)
+    return bundle
 
 
 SYSTEM_PROMPT = """You write ethical, one-to-one B2B outreach for an independent Hostinger affiliate.
@@ -55,12 +129,15 @@ You must use only facts supplied in the JSON. Never invent an owner name, perfor
 The sender does NOT build websites, configure hosting, work for Hostinger, or offer professional audits. He may offer a simple no-cost checklist based on public observations.
 Write plain-text, respectful messages. No fake urgency, flattery, fear, guaranteed results, tracking language, or spam phrasing.
 Do not include an affiliate link, affiliate disclosure, signature, postal address, or opt-out footer; the application adds those safely.
-The first email must provide the verified observation and a practical suggestion before asking permission to send a checklist.
-Follow-ups add new specific value. The final follow-up closes the loop and promises no more follow-up.
+Address the business as "Hi <business name> team," and never invent an owner or personal name.
+Use a point-in-time qualifier for response-time observations. A viewport proves only that a viewport tag exists, not that mobile performance is good. A missing meta description affects search-snippet presentation, not guaranteed rankings. Reported large-image sizes may contribute to load time; do not state certainty.
+The application appends a hosted report link to stages 0 and 2. Those stages must not contain a URL, ask whether the reader wants a checklist, or add any competing question CTA. End stage 0 by saying the observations and checklist are summarized in the report linked below.
+Stage 1 may contain one low-friction question. Stage 2 adds one new useful idea and refers to the report below without a question. The final follow-up closes the loop and promises no more follow-up.
+Avoid generic filler such as "no pressure", "common in your industry", "I hope this finds you well", and broad claims such as "performs well".
 Return one JSON object only with keys: analysis_summary, opportunity, checklist, messages.
 checklist must contain exactly 5 short items.
 messages must contain exactly four objects with stages 0,1,2,3 and keys stage, subject, body_core.
-Keep stage 0 under 170 words, stages 1 and 2 under 110 words, and stage 3 under 80 words."""
+Use truthful 3-7 word subjects with no Re:/Fwd:. Keep stage 0 at 45-110 words, stages 1 and 2 at 25-80 words, and stage 3 at 20-65 words. Internally self-edit every message against these rules before returning only the final JSON."""
 
 
 def _request_model_content(settings, business: dict) -> str:
@@ -132,12 +209,32 @@ def generate_drafts(business: dict, demo_mode: bool | None = None) -> DraftBundl
                 raise ValueError("AI message missing subject or body_core")
             # Defense in depth: the model must not inject the affiliate link itself.
             item["body_core"] = item["body_core"].replace(settings.affiliate_url, "").strip()
-        return DraftBundle(
+        bundle = DraftBundle(
             analysis_summary=str(data.get("analysis_summary", "")).strip(),
             opportunity=str(data.get("opportunity", "")).strip(),
             checklist=[str(x).strip() for x in data["checklist"]],
             messages=messages,
         )
+        bundle.quality_review = review_email_bundle(
+            str(business.get("business_name") or "the business"),
+            messages,
+        )
+        raw_minimum_score = bundle.quality_review.get("minimum_score", 0)
+        minimum_score = (
+            float(raw_minimum_score)
+            if isinstance(raw_minimum_score, (int, float))
+            else 0
+        )
+        if settings.email_ai_quality_gate_enabled and (
+            not bundle.quality_review.get("approved")
+            or minimum_score < settings.email_ai_min_quality_score
+        ):
+            log.warning(
+                "AI draft failed the professional quality gate; using evidence-based fallback: %s",
+                bundle.quality_review,
+            )
+            return _fallback(business)
+        return bundle
     except Exception as exc:
         log.exception("AI drafting failed; using deterministic fallback: %s", exc)
         return _fallback(business)

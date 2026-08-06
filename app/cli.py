@@ -15,6 +15,7 @@ from .pipeline import (
     sync_replies_job,
 )
 from .runtime import ensure_system_state, get_runtime_mode, set_runtime_mode
+from .services.outreach_refresh import refresh_unsent_outreach_links
 from .sheets import sync_google_sheet_job
 
 
@@ -22,7 +23,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="LeadFlow maintenance commands")
     parser.add_argument(
         "command",
-        choices=["discover", "fast-start", "send", "sync", "sheet", "connections", "ai", "mode-status", "mode-demo", "mode-live", "gates"],
+        choices=["discover", "fast-start", "refresh-links", "send", "sync", "sheet", "connections", "ai", "mode-status", "mode-demo", "mode-live", "gates"],
     )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
@@ -33,6 +34,8 @@ def main() -> None:
         result = discover_job(force=args.force)
     elif args.command == "fast-start":
         result = fast_start_job()
+    elif args.command == "refresh-links":
+        result = refresh_unsent_outreach_links()
     elif args.command == "send":
         result = send_due_job()
     elif args.command == "sync":

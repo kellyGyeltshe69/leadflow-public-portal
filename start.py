@@ -133,7 +133,8 @@ def set_env_line(text: str, key: str, value: str) -> str:
     return text.rstrip() + "\n" + replacement + "\n"
 
 
-def read_env(path: Path = ENV_FILE) -> dict[str, str]:
+def read_env(path: Path | None = None) -> dict[str, str]:
+    path = path or ENV_FILE
     values: dict[str, str] = {}
     if not path.exists():
         return values
@@ -144,6 +145,67 @@ def read_env(path: Path = ENV_FILE) -> dict[str, str]:
         key, value = line.split("=", 1)
         values[key.strip()] = value.strip().strip('"').strip("'")
     return values
+
+
+INTEGER_ENV_DEFAULTS = {
+    "DATABASE_POOL_SIZE": 10,
+    "DATABASE_MAX_OVERFLOW": 20,
+    "DATABASE_POOL_RECYCLE_SECONDS": 1800,
+    "API_RATE_LIMIT_PER_MINUTE": 120,
+    "AUTH_RATE_LIMIT_PER_MINUTE": 10,
+    "JWT_ACCESS_MINUTES": 30,
+    "DAILY_NEW_LEAD_LIMIT": 12,
+    "DAILY_TOTAL_SEND_LIMIT": 50,
+    "STARTUP_DISCOVERY_TARGET": 250,
+    "STARTUP_DISCOVERY_COOLDOWN_HOURS": 24,
+    "OLLAMA_NUM_CTX": 4096,
+    "OLLAMA_TIMEOUT_SECONDS": 180,
+    "LLAMACPP_NUM_CTX": 4096,
+    "LLAMACPP_N_GPU_LAYERS": 0,
+    "LLAMACPP_TIMEOUT_SECONDS": 300,
+    "OPENAI_TIMEOUT_SECONDS": 60,
+    "AUDIT_TIMEOUT_SECONDS": 15,
+    "AUDIT_LINK_CHECK_LIMIT": 12,
+    "AUDIT_LINK_WORKERS": 4,
+    "BROWSER_AUDIT_TIMEOUT_SECONDS": 35,
+    "REPLY_SYNC_MINUTES": 10,
+    "SEND_QUEUE_MINUTES": 5,
+    "SHEET_SYNC_MINUTES": 15,
+    "DISCOVERY_CHECK_MINUTES": 30,
+    "STARTUP_HEALTH_TIMEOUT_SECONDS": 120,
+}
+
+
+def repair_known_env_format_errors() -> dict[str, int]:
+    """Repair only malformed non-secret integer values using documented defaults."""
+    if not ENV_FILE.exists():
+        return {}
+    text = ENV_FILE.read_text(encoding="utf-8")
+    values = read_env()
+    repaired: dict[str, int] = {}
+    for key, default in INTEGER_ENV_DEFAULTS.items():
+        raw = values.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            int(raw)
+            continue
+        except ValueError:
+            pass
+        numeric_prefix = re.fullmatch(r"\s*([0-9]+)(?:\.0+)?[A-Za-z]?\s*", raw)
+        replacement = int(numeric_prefix.group(1)) if numeric_prefix else default
+        text = set_env_line(text, key, str(replacement))
+        repaired[key] = replacement
+    if repaired:
+        backup = ROOT / ".env.before-format-repair"
+        if not backup.exists():
+            shutil.copy2(ENV_FILE, backup)
+        ENV_FILE.write_text(text, encoding="utf-8")
+        with suppress(OSError):
+            ENV_FILE.chmod(0o600)
+        for key, value in repaired.items():
+            log(f"Repaired malformed numeric setting {key}={value}.")
+    return repaired
 
 
 def _previous_env_candidates() -> list[Path]:
@@ -312,11 +374,43 @@ def project_python(use_venv: bool = True) -> Path:
     """
     candidate = venv_python()
     if use_venv and candidate.exists():
-        return candidate.resolve()
+        # Preserve virtualenv interpreter symlinks so their site-packages remain active.
+        return candidate.absolute()
     # Do not resolve the active interpreter symlink. Render and many Unix
     # platforms expose a virtualenv Python symlink whose resolved base binary
     # does not include the deployed virtualenv's site-packages.
     return Path(sys.executable).absolute()
+
+
+def validate_project_configuration(
+    file_values: dict[str, str],
+    *,
+    use_venv: bool = True,
+) -> None:
+    env = os.environ.copy()
+    for key, value in file_values.items():
+        env.setdefault(key, value)
+    code = (
+        "import json; from pydantic import ValidationError; from app.config import Settings; "
+        "\ntry:\n Settings()\nexcept ValidationError as exc:\n"
+        " print(json.dumps([{'field':'.'.join(str(x) for x in e['loc']),"
+        "'message':e['msg']} for e in exc.errors()]))\n raise SystemExit(1)"
+    )
+    result = subprocess.run(
+        [str(project_python(use_venv)), "-c", code],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return
+    detail = result.stdout.strip() or "unknown configuration validation error"
+    raise SystemExit(
+        "LeadFlow configuration is invalid and startup was stopped before database migration. "
+        f"Fields: {detail}"
+    )
 
 
 def install_playwright_browser(use_venv: bool = True) -> None:
@@ -347,6 +441,17 @@ def url_ready(url: str, timeout: float = 2.0) -> bool:
 def wait_for_url(url: str, seconds: int) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
+        if url_ready(url):
+            return True
+        time.sleep(1)
+    return False
+
+
+def wait_for_process_url(process: subprocess.Popen, url: str, seconds: int) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return False
         if url_ready(url):
             return True
         time.sleep(1)
@@ -587,6 +692,44 @@ def _saved_portal_metadata(values: dict[str, str]) -> tuple[str, str]:
     return (
         _valid_public_portal_url(values.get("PUBLIC_REPORT_BASE_URL", "")),
         _valid_github_repository(values.get("PUBLIC_PORTAL_GITHUB_REPOSITORY", "")),
+    )
+
+
+def public_portal_setup_status(values: dict[str, str]) -> tuple[str, str]:
+    raw_report_url = values.get("PUBLIC_REPORT_BASE_URL", "")
+    valid_report_url = _valid_public_portal_url(raw_report_url)
+    github_url = _valid_github_repository(
+        values.get("PUBLIC_PORTAL_GITHUB_REPOSITORY", "")
+    )
+    render_exists = values.get("PUBLIC_PORTAL_RENDER_SERVICE_EXISTS", "false").lower() == "true"
+    neon_configured = _is_neon_database(values)
+    requested = bool(raw_report_url or github_url or render_exists or neon_configured)
+    if not requested:
+        return "not_requested", ""
+    if valid_report_url:
+        return "complete", ""
+    if _is_render_dashboard_url(raw_report_url):
+        return (
+            "incomplete",
+            "Render exists, but PUBLIC_REPORT_BASE_URL is a dashboard URL. "
+            "Run: python start.py --repair-render-portal",
+        )
+    if render_exists:
+        return (
+            "incomplete",
+            "Render exists, but its public service URL is missing. "
+            "Run: python start.py --repair-render-portal",
+        )
+    if github_url:
+        return (
+            "incomplete",
+            "GitHub is ready, but Render setup is incomplete. "
+            "Run: python start.py --setup-free-portal",
+        )
+    return (
+        "incomplete",
+        "Neon is configured, but the public portal is incomplete. "
+        "Run: python start.py --setup-free-portal",
     )
 
 
@@ -1206,13 +1349,28 @@ def run_preflight(args: argparse.Namespace, file_values: dict[str, str]) -> int:
         binary = shutil.which("ollama")
         level = "PASS" if ready or binary else "WARN"
         add(level, "Ollama", f"reachable at {endpoint}" if ready else f"binary: {binary or 'not found; deterministic fallback will be used'}")
-    else:
+    elif runtime == "llamacpp":
         env = local_runtime_env(file_values, args.host, args.port)
         endpoint = env.get("LLAMACPP_BASE_URL", "http://127.0.0.1:8080").replace("llama-cpp", "127.0.0.1").rstrip("/")
         ready = url_ready(endpoint + "/health")
         binary = shutil.which("llama-server") or shutil.which("llama")
         level = "PASS" if ready or binary else "WARN"
         add(level, "llama.cpp", f"reachable at {endpoint}" if ready else f"binary: {binary or 'not found; deterministic fallback will be used'}")
+    else:
+        endpoint = file_values.get("OPENAI_BASE_URL", "").strip()
+        api_key = file_values.get("OPENAI_API_KEY", "").strip()
+        model = file_values.get("OPENAI_MODEL", "").strip()
+        configured = bool(
+            endpoint.startswith("https://")
+            and api_key
+            and not api_key.startswith("replace-")
+            and model
+        )
+        add(
+            "PASS" if configured else "FAIL",
+            "Hosted AI provider",
+            f"configured model: {model}" if configured else "OPENAI_BASE_URL/API_KEY/MODEL incomplete",
+        )
 
     if args.browser_audit and not args.docker:
         python = str(project_python(use_venv=not args.no_install))
@@ -1237,6 +1395,12 @@ def run_preflight(args: argparse.Namespace, file_values: dict[str, str]) -> int:
         }
         for key, value in required_live.items():
             add("PASS" if value else "FAIL", key, "configured" if value else "missing")
+        postal_attested = file_values.get("POSTAL_ADDRESS_ATTESTED", "false").lower() == "true"
+        add(
+            "PASS" if postal_attested else "FAIL",
+            "Postal address attestation",
+            "confirmed" if postal_attested else "required before approval/sending",
+        )
         public_url = file_values.get("PUBLIC_REPORT_BASE_URL", "") or file_values.get("PUBLIC_BASE_URL", "")
         public_ok = public_url.startswith("https://") and "yourdomain" not in public_url
         add("PASS" if public_ok else "FAIL", "Public report URL", public_url or "missing")
@@ -1272,8 +1436,10 @@ def run_local(args: argparse.Namespace, file_values: dict[str, str], generated_p
     runtime_name = args.ai_runtime
     if args.ai_runtime == "llamacpp":
         runtime_process = maybe_start_llamacpp(env, args.skip_local_ai)
-    else:
+    elif args.ai_runtime == "ollama":
         runtime_process = maybe_start_ollama(env, args.skip_local_ai, args.skip_model_pull)
+    else:
+        log("Using the configured hosted OpenAI-compatible provider; no local AI runtime is started.")
     python = str(project_python(use_venv=not args.no_install))
     command = [
         python, "-m", "uvicorn", "app.main:app", "--host", args.host, "--port", str(args.port), "--workers", "1"
@@ -1285,7 +1451,8 @@ def run_local(args: argparse.Namespace, file_values: dict[str, str], generated_p
     public_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
     base_url = f"http://{public_host}:{args.port}"
     try:
-        if wait_for_url(base_url + "/health", 45):
+        startup_timeout = max(45, int(env.get("STARTUP_HEALTH_TIMEOUT_SECONDS", "120")))
+        if wait_for_process_url(app_process, base_url + "/health", startup_timeout):
             print("\nLeadFlow is ready:")
             print(f"  Frontend dashboard: {base_url}")
             print(f"  Backend API docs:   {base_url}/docs")
@@ -1300,7 +1467,13 @@ def run_local(args: argparse.Namespace, file_values: dict[str, str], generated_p
                 with suppress(Exception):
                     webbrowser.open(base_url)
         else:
-            log("The web server did not pass its health check within 45 seconds. Check the logs above.")
+            if app_process.poll() is not None:
+                log(f"The web server exited during startup with code {app_process.returncode}. Check the logs above.")
+            else:
+                log(
+                    f"The web server is still running but did not become healthy within {startup_timeout} seconds. "
+                    "Do not start a second instance; check the startup phase logs above."
+                )
         return app_process.wait()
     except KeyboardInterrupt:
         return 0
@@ -1358,7 +1531,12 @@ def run_docker(args: argparse.Namespace, generated_password: str | None) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Install and start the complete LeadFlow application")
     parser.add_argument("--docker", action="store_true", help="Use Docker Compose for the app and selected local AI runtime")
-    parser.add_argument("--ai-runtime", choices=["ollama", "llamacpp"], default=None, help="Local AI runtime (default comes from .env)")
+    parser.add_argument(
+        "--ai-runtime",
+        choices=["ollama", "llamacpp", "openai_compatible"],
+        default=None,
+        help="AI provider/runtime (default comes from .env; openai_compatible supports Groq)",
+    )
     parser.add_argument("--gpu", choices=["cpu", "nvidia", "amd"], default="cpu", help="Docker local-AI hardware mode")
     parser.add_argument("--detach", action="store_true", help="Start Docker services in the background")
     parser.add_argument("--production", action="store_true", help="Add PostgreSQL, Redis, RQ worker, and dedicated scheduler")
@@ -1421,7 +1599,8 @@ def main() -> int:
     file_values, generated_password = ensure_env_file()
     if args.ai_runtime is None:
         configured_runtime = file_values.get("AI_PROVIDER", "ollama").lower()
-        args.ai_runtime = configured_runtime if configured_runtime in {"ollama", "llamacpp"} else "ollama"
+        supported = {"ollama", "llamacpp", "openai_compatible"}
+        args.ai_runtime = configured_runtime if configured_runtime in supported else "ollama"
     if generated_password:
         os.environ["LEADFLOW_GENERATED_ADMIN_PASSWORD"] = generated_password
     else:
@@ -1432,6 +1611,13 @@ def main() -> int:
         return run_docker(args, generated_password)
     if not args.no_install:
         install_python_requirements(args.force_install)
+    if repair_known_env_format_errors():
+        file_values = read_env()
+    validate_project_configuration(file_values, use_venv=not args.no_install)
+    if not portal_actions:
+        portal_status, portal_message = public_portal_setup_status(file_values)
+        if portal_status == "incomplete":
+            log(f"Public portal setup is incomplete: {portal_message}")
     if args.browser_audit:
         install_playwright_browser(use_venv=not args.no_install)
     if args.update_public_portal:

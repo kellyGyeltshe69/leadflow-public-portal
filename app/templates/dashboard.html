@@ -11,6 +11,7 @@
     {% if runtime_mode == 'demo' %}<form method="post" action="/mode/live"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="mode-switch-live">Switch to LIVE DATA</button></form>{% else %}<form method="post" action="/mode/demo"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger">Switch to DEMO</button></form>{% endif %}
     <form method="post" action="/jobs/discover"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Run daily discovery</button></form>
     <form method="post" action="/jobs/fast-start"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Run {{ settings.startup_discovery_target }}-candidate fast start</button></form>
+    <form method="post" action="/jobs/refresh-links"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">Refresh hosted links</button></form>
     <form method="post" action="/jobs/sync"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">Sync Gmail replies</button></form>
     <form method="post" action="/jobs/sheet"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">Sync Google Sheet</button></form>
     <form method="post" action="/jobs/send"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">Process send queue</button></form>

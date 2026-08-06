@@ -563,6 +563,10 @@ def discover_job(
                     lead.analysis_summary = bundle.analysis_summary
                     lead.opportunity = bundle.opportunity or lead.opportunity
                     lead.checklist = bundle.checklist
+                    lead.audit_facts = {
+                        **(lead.audit_facts or {}),
+                        "email_quality_review": bundle.quality_review,
+                    }
 
                 _job_progress(
                     job_id,
@@ -740,6 +744,10 @@ def reverify_lead(lead_id: int) -> dict:
             if all(m.status == "draft" for m in lead.messages):
                 bundle = generate_drafts(_business_payload(lead), demo_mode=lead.data_mode == "demo")
                 lead.analysis_summary, lead.opportunity, lead.checklist = bundle.analysis_summary, bundle.opportunity, bundle.checklist
+                lead.audit_facts = {
+                    **(lead.audit_facts or {}),
+                    "email_quality_review": bundle.quality_review,
+                }
                 by_stage = {int(x["stage"]): x for x in bundle.messages}
                 for message in lead.messages:
                     message.subject = by_stage[message.stage]["subject"]
@@ -769,6 +777,12 @@ def approve_lead(lead_id: int) -> None:
             raise ValueError("Demo leads cannot be approved for sending. Switch to Live mode and discover real leads.")
         if lead.status not in {"pending_approval", "approved"}:
             raise ValueError(f"Lead status {lead.status!r} cannot be approved")
+        if settings.email_ai_quality_gate_enabled:
+            quality_review = (lead.audit_facts or {}).get("email_quality_review") or {}
+            if not quality_review.get("approved"):
+                raise ValueError(
+                    "Professional copy approval is missing or failed. Reverify the lead to regenerate and score all drafts."
+                )
         if not lead.contact_email or _dnc(session, lead.contact_email):
             raise ValueError("The public email is missing or on the do-not-contact list")
         if not lead.last_verified_at or utcnow() - lead.last_verified_at > timedelta(days=3):

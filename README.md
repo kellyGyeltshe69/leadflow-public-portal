@@ -3,9 +3,10 @@
 This mode keeps discovery, website auditing, Ollama, Gmail, and the administrator dashboard on your Windows computer. A small hosted FastAPI process serves only the signed public report, affiliate redirect, and opt-out routes:
 
 ```text
-/r/{token}
-/go/{token}
-/unsubscribe/{token}
+/r/{short-token}
+/go/{short-token}
+/u/{short-token}
+/unsubscribe/{legacy-token}  # backward compatibility
 ```
 
 Both local LeadFlow and the hosted portal use the same Neon PostgreSQL database and the same `APP_SECRET`. That makes report links, click records, and opt-outs immediately visible to the local application without exposing Composio or Gmail credentials to Render.

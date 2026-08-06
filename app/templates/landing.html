@@ -6,7 +6,7 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="referrer" content="no-referrer">
   <title>{{ landing.headline }}</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=1.3.1">
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=1.5.0">
 </head>
 <body class="landing-body">
 <main class="landing-shell">
@@ -29,7 +29,7 @@
     <p class="affiliate-disclosure">Disclosure: {{ sender_name|default('David Brown', true) }} is an independent Hostinger affiliate and may earn a commission if you purchase through this button. This report is not produced by Hostinger.</p>
   </section>
   <section class="panel"><h2>FAQ</h2><details><summary>Does this page guarantee better rankings or sales?</summary><p>No. It summarizes public observations and offers practical options; outcomes are not guaranteed.</p></details><details><summary>Are prices shown here?</summary><p>No. Hosting prices and renewal terms change, so the button opens the current official offer.</p></details><details><summary>Are the testimonials real?</summary><p>No testimonials are displayed unless verified and approved. LeadFlow never fabricates testimonials.</p></details></section>
-  <footer class="portal-footer"><p>Prepared by {{ sender_name|default('David Brown', true) }} · {{ sender_role|default('Independent Hostinger Affiliate', true) }}</p><p>No tracking pixel is used. This private-link report is excluded from search indexing.</p>{% if unsubscribe_token %}<p><a href="/unsubscribe/{{ unsubscribe_token }}">Stop future outreach</a></p>{% endif %}</footer>
+  <footer class="portal-footer"><p>Prepared by {{ sender_name|default('David Brown', true) }} · {{ sender_role|default('Independent Hostinger Affiliate', true) }}</p><p>No tracking pixel is used. This private-link report is excluded from search indexing.</p>{% if unsubscribe_token %}<p><a href="/u/{{ unsubscribe_token }}">Stop future outreach</a></p>{% endif %}</footer>
 </main>
 </body>
 </html>

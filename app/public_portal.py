@@ -83,7 +83,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="LeadFlow Public Report Portal",
-    version="1.3.1",
+    version="1.5.0",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
@@ -101,7 +101,7 @@ async def portal_response_policy(request: Request, call_next):
     response.headers.setdefault("X-Robots-Tag", "noindex, nofollow, noarchive")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
-    if request.url.path.startswith(("/r/", "/go/", "/unsubscribe/")):
+    if request.url.path.startswith(("/r/", "/go/", "/u/", "/unsubscribe/")):
         _private_page_headers(response)
     return response
 
@@ -185,6 +185,7 @@ def affiliate_redirect(request: Request, token: str):
     return response
 
 
+@app.get("/u/{token}", response_class=HTMLResponse)
 @app.get("/unsubscribe/{token}", response_class=HTMLResponse)
 def unsubscribe_confirmation(request: Request, token: str):
     lead_id = verify_unsubscribe_token(token)
@@ -205,6 +206,7 @@ def unsubscribe_confirmation(request: Request, token: str):
     return response
 
 
+@app.post("/u/{token}", response_class=HTMLResponse)
 @app.post("/unsubscribe/{token}", response_class=HTMLResponse)
 def unsubscribe_one_click(request: Request, token: str):
     lead_id = verify_unsubscribe_token(token)

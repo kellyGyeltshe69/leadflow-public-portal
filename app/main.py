@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import re
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -73,12 +74,22 @@ from .security import (
 from .services.affiliate import AffiliateService
 from .services.audit_log import record_log
 from .services.compat_sync import sync_business_from_legacy, sync_email_from_legacy
+from .services.outreach_refresh import refresh_unsent_outreach_links
 from .workers.queue import dispatch_job
 
 configure_logging(json_logs=True)
 log = logging.getLogger(__name__)
 settings = get_settings()
 templates = Jinja2Templates(directory="app/templates")
+
+
+def _refresh_unsent_links_in_background() -> None:
+    try:
+        log.info("Background hosted-link refresh started.")
+        result = refresh_unsent_outreach_links()
+        log.info("Background hosted-link refresh finished: %s", result)
+    except Exception:
+        log.exception("Background hosted-link refresh failed; sending remains gated.")
 
 
 @asynccontextmanager
@@ -91,6 +102,19 @@ async def lifespan(_app: FastAPI):
     bootstrap_admin_user()
     ensure_system_state()
     ensure_default_campaign()
+    if settings.sending_enabled:
+        # Never allow a sending-enabled local process to start before stale
+        # report/opt-out links have been refreshed and validated.
+        refresh_result = refresh_unsent_outreach_links()
+        log.info("Blocking hosted-link refresh finished before sending: %s", refresh_result)
+    else:
+        # Normal safe/testing startup becomes healthy immediately while the
+        # potentially large Neon-backed refresh continues in a daemon thread.
+        threading.Thread(
+            target=_refresh_unsent_links_in_background,
+            name="leadflow-link-refresh",
+            daemon=True,
+        ).start()
     if not settings.async_workers_enabled:
         # Local background tasks cannot survive a web-process restart. Mark any
         # leftover rows explicitly instead of showing them as running forever.
@@ -107,7 +131,7 @@ async def lifespan(_app: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title=settings.app_name, version="1.3.1", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="1.5.0", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.app_secret,
@@ -295,6 +319,7 @@ def prometheus_metrics(request: Request):
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
+@app.get("/u/{token}", response_class=HTMLResponse)
 @app.get("/unsubscribe/{token}", response_class=HTMLResponse)
 def unsubscribe_confirmation(request: Request, token: str):
     lead_id = verify_unsubscribe_token(token)
@@ -315,6 +340,7 @@ def unsubscribe_confirmation(request: Request, token: str):
     return _private_page_headers(response)
 
 
+@app.post("/u/{token}", response_class=HTMLResponse)
 @app.post("/unsubscribe/{token}", response_class=HTMLResponse)
 def unsubscribe_one_click(request: Request, token: str):
     lead_id = verify_unsubscribe_token(token)
@@ -742,6 +768,21 @@ def manual_fast_start(background: BackgroundTasks, csrf: str = Form(...)):
     # discovery lock still prevents duplicate concurrent runs in this process.
     background.add_task(fast_start_job, True)
     return redirect("/", f"Fast-start discovery started for up to {settings.startup_discovery_target} candidates.")
+
+
+@admin.post("/jobs/refresh-links")
+def manual_refresh_links(csrf: str = Form(...)):
+    check_csrf(csrf)
+    result = refresh_unsent_outreach_links()
+    if result.get("status") == "skipped":
+        return redirect("/", error=str(result.get("reason") or "Hosted link refresh was skipped."))
+    if result.get("status") == "running":
+        return redirect("/", message="A hosted-link refresh is already running in the background.")
+    return redirect(
+        "/",
+        f"Refreshed {result.get('updated', 0)} unsent message(s); "
+        f"replaced {result.get('localhost_replaced', 0)} local/dashboard link set(s).",
+    )
 
 
 @admin.post("/jobs/send")

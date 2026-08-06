@@ -6,7 +6,7 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="referrer" content="no-referrer">
   <title>Outreach preferences</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=1.3.1">
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=1.5.0">
 </head>
 <body class="landing-body">
 <main class="landing-shell portal-narrow">
@@ -23,7 +23,7 @@
       <p class="eyebrow">OUTREACH PREFERENCES</p>
       <h1>Stop future email?</h1>
       <p>Confirm below and no further LeadFlow messages will be scheduled for this business contact.</p>
-      <form method="post" action="/unsubscribe/{{ token }}"><button type="submit" class="danger">Confirm opt-out</button></form>
+      <form method="post" action="/u/{{ token }}"><button type="submit" class="danger">Confirm opt-out</button></form>
     {% endif %}
     <p class="muted">{{ sender_name|default('David Brown', true) }} · {{ sender_role|default('Independent Hostinger Affiliate', true) }}</p>
   </section>

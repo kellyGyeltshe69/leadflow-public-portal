@@ -34,6 +34,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         for prefix, template in (
             ("/r/", "/r/{token}"),
             ("/go/", "/go/{token}"),
+            ("/u/", "/u/{token}"),
             ("/unsubscribe/", "/unsubscribe/{token}"),
         ):
             if path.startswith(prefix):
@@ -80,6 +81,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             path.startswith("/api/")
             or path.startswith("/r/")
             or path.startswith("/go/")
+            or path.startswith("/u/")
             or path.startswith("/unsubscribe/")
         ):
             return await call_next(request)

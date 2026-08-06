@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     sender_role: str = "Independent Hostinger Affiliate"
     sender_email: str = ""
     physical_postal_address: str = ""
+    postal_address_attested: bool = False
     affiliate_url: str = "https://www.hostinger.com?REFERRALCODE=ZEVDAVIDBEXE"
 
     demo_mode: bool = True
@@ -101,6 +102,8 @@ class Settings(BaseSettings):
     # Local Ollama is the default AI backend. The app container reaches the
     # private Compose service by its service name; port 11434 is not published.
     ai_provider: str = "ollama"
+    email_ai_quality_gate_enabled: bool = True
+    email_ai_min_quality_score: int = Field(default=85, ge=50, le=100)
     ollama_base_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3:4b-instruct"
     ollama_num_ctx: int = Field(default=4096, ge=1024, le=131072)
@@ -151,7 +154,12 @@ class Settings(BaseSettings):
     @property
     def postal_ready(self) -> bool:
         value = self.physical_postal_address.strip().lower()
-        return bool(value and "required" not in value and "placeholder" not in value)
+        return bool(
+            self.postal_address_attested
+            and value
+            and "required" not in value
+            and "placeholder" not in value
+        )
 
     @property
     def composio_ready(self) -> bool:
@@ -209,11 +217,22 @@ class Settings(BaseSettings):
         except ValueError:
             return False
         host = (parsed.hostname or "").lower()
+        blocked_hosts = {
+            "localhost",
+            "127.0.0.1",
+            "leads.yourdomain.com",
+            "dashboard.render.com",
+            "console.neon.tech",
+            "github.com",
+        }
         return bool(
             parsed.scheme == "https"
             and host
-            and host not in {"localhost", "127.0.0.1", "leads.yourdomain.com"}
+            and host not in blocked_hosts
             and "yourdomain" not in host
+            and parsed.path in {"", "/"}
+            and not parsed.query
+            and not parsed.fragment
         )
 
     @property
