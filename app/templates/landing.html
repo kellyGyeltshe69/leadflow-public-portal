@@ -6,113 +6,129 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#081318">
-  <title>Website review · {{ report.get('business_name', landing.headline) }}</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=1.6.1">
+  <meta name="theme-color" content="#071116">
+  <title>{{ report.get('business_name') }} · Executive website review</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=1.7.0">
 </head>
-<body class="report-page">
-<header class="report-nav">
-  <div class="report-nav-inner">
-    <a class="report-brand" href="/" aria-label="LeadFlow private report portal"><span class="report-brand-mark">LF</span><span><strong>LeadFlow</strong><small>Independent website review</small></span></a>
-    <span class="private-report-badge">Private signed link · No tracking pixel</span>
-  </div>
-</header>
-<main class="report-shell">
-  <section class="report-hero">
-    <div class="report-hero-copy">
-      <p class="report-kicker">POINT-IN-TIME PUBLIC WEBSITE REVIEW</p>
-      <h1>{{ report.get('business_name') }}</h1>
-      <p class="report-subtitle">A concise, evidence-based review of the public customer journey—not a guarantee, ranking report, or full professional audit.</p>
-      <div class="report-meta">
-        {% if report.get('industry') %}<span>{{ report.get('industry') }}</span>{% endif %}
-        {% if report.get('location') %}<span>{{ report.get('location') }}</span>{% endif %}
-        {% if report.get('website_host') %}<a href="{{ report.get('website_url') }}" target="_blank" rel="noopener nofollow">{{ report.get('website_host') }}</a>{% endif %}
-        {% if report.get('reviewed_at') %}<span>Reviewed {{ report.get('reviewed_at').strftime('%b %d, %Y') }}</span>{% endif %}
+<body class="exec-report-page">
+<div class="exec-report-layout">
+  <aside class="exec-rail">
+    <a class="exec-brand" href="/" aria-label="LeadFlow report portal"><span>LF</span><div><strong>LeadFlow</strong><small>Website intelligence</small></div></a>
+    <div class="exec-document-meta">
+      <span>PRIVATE REPORT</span>
+      <strong>{{ report.get('report_id') }}</strong>
+      {% if report.get('reviewed_at') %}<small>Issued {{ report.get('reviewed_at').strftime('%B %d, %Y') }}</small>{% endif %}
+    </div>
+    <nav class="exec-toc" aria-label="Report sections">
+      <a href="#summary"><span>01</span>Executive summary</a>
+      <a href="#scorecard"><span>02</span>Scorecard</a>
+      <a href="#findings"><span>03</span>Key findings</a>
+      <a href="#roadmap"><span>04</span>Action roadmap</a>
+      <a href="#recommendation"><span>05</span>Recommendation</a>
+      <a href="#appendix"><span>06</span>Technical appendix</a>
+    </nav>
+    <div class="exec-rail-note"><strong>Private signed link</strong><p>No tracking pixel. Excluded from search indexing. Public website evidence only.</p></div>
+  </aside>
+
+  <main class="exec-report-main">
+    <section class="exec-cover" id="summary">
+      <div class="exec-cover-grid"></div>
+      <div class="exec-cover-copy">
+        <div class="exec-label-row"><span>EXECUTIVE WEBSITE REVIEW</span><span>POINT-IN-TIME ANALYSIS</span></div>
+        <h1>{{ report.get('business_name') }}</h1>
+        <p>{{ report.get('summary') }}</p>
+        <div class="exec-cover-meta">
+          {% if report.get('industry') %}<span>{{ report.get('industry') }}</span>{% endif %}
+          {% if report.get('location') %}<span>{{ report.get('location') }}</span>{% endif %}
+          {% if report.get('website_host') %}<a href="{{ report.get('website_url') }}" target="_blank" rel="noopener nofollow">{{ report.get('website_host') }}</a>{% endif %}
+        </div>
       </div>
-    </div>
-    <div class="report-score-card" aria-label="Opportunity priority score {{ report.get('overall_score', 0) }} out of 100">
-      <svg class="report-score-ring" viewBox="0 0 120 120" role="img" aria-hidden="true">
-        <circle class="score-ring-track" cx="60" cy="60" r="50" pathLength="100"></circle>
-        <circle class="score-ring-value" cx="60" cy="60" r="50" pathLength="100" stroke-dasharray="{{ report.get('overall_score', 0) }} 100"></circle>
-      </svg>
-      <div class="report-score-value"><strong>{{ report.get('overall_score', 0) }}</strong><span>/100</span></div>
-      <p>Opportunity priority</p>
-      <small>Higher means more verified improvement opportunity—not lower business quality.</small>
-    </div>
-  </section>
-
-  <section class="report-summary-card">
-    <div><span class="summary-label">Executive summary</span><h2>{{ report.get('website_status') }}</h2></div>
-    <p>{{ report.get('summary') }}</p>
-  </section>
-
-  <section class="report-section" aria-labelledby="score-breakdown">
-    <div class="report-section-head"><div><p class="report-kicker">SCORE BREAKDOWN</p><h2 id="score-breakdown">Four review dimensions</h2></div><p>Heuristic scores based on the captured public evidence. “Not measured” means the check was unavailable.</p></div>
-    <div class="report-score-grid">
-      {% for item in report.get('scores', []) %}
-      <article class="dimension-card">
-        <div><span>{{ item.get('name') }}</span><strong>{{ item.get('value') if item.get('value') is not none else '—' }}</strong></div>
-        <progress max="100" value="{{ item.get('value') or 0 }}">{{ item.get('value') or 0 }}</progress>
-        <small>{{ 'Measured from this review' if item.get('value') is not none else 'Not measured' }}</small>
-      </article>
-      {% endfor %}
-    </div>
-  </section>
-
-  <section class="report-section" aria-labelledby="findings-title">
-    <div class="report-section-head"><div><p class="report-kicker">VERIFIED OBSERVATIONS</p><h2 id="findings-title">What deserves attention</h2></div><p>Use these as a review queue. Retest anything time-sensitive before changing the site.</p></div>
-    <div class="findings-list">
-      {% for finding in report.get('findings', []) %}
-      <article class="finding-card severity-{{ finding.get('severity') }}">
-        <div class="finding-top"><span class="severity-pill">{{ finding.get('severity')|upper }}</span><span class="finding-category">{{ finding.get('category') }}</span></div>
-        <p>{{ finding.get('text') }}</p>
-        <small>Evidence confidence: {{ finding.get('confidence') }}</small>
-      </article>
-      {% else %}
-      <article class="finding-card severity-advisory"><div class="finding-top"><span class="severity-pill">ADVISORY</span></div><p>No major issue was verified in this point-in-time review. Prioritize customer-journey testing before considering a rebuild.</p></article>
-      {% endfor %}
-    </div>
-  </section>
-
-  <section class="report-section action-section" aria-labelledby="actions-title">
-    <div class="report-section-head"><div><p class="report-kicker">PRIORITIZED NEXT STEPS</p><h2 id="actions-title">A practical action plan</h2></div><p>Start with the smallest change that addresses a verified issue. A full migration is not automatically required.</p></div>
-    <ol class="action-list">
-      {% for item in report.get('checklist', []) %}
-      <li><span>{{ loop.index }}</span><p>{{ item }}</p></li>
-      {% endfor %}
-    </ol>
-    {% if report.get('opportunity') %}<div class="opportunity-note"><strong>Suggested focus</strong><p>{{ report.get('opportunity') }}</p></div>{% endif %}
-  </section>
-
-  <section class="report-section technical-section">
-    <details>
-      <summary><span><strong>Technical snapshot</strong><small>Selected non-sensitive facts captured during the review</small></span><span class="details-indicator">+</span></summary>
-      <div class="technical-grid">
-        {% for item in report.get('technical', []) %}<div><span>{{ item.get('label') }}</span><strong>{{ item.get('value') }}</strong></div>{% endfor %}
+      <div class="exec-cover-score">
+        <svg viewBox="0 0 140 140" role="img" aria-label="Opportunity priority {{ report.get('overall_score', 0) }} out of 100">
+          <circle class="exec-ring-track" cx="70" cy="70" r="57" pathLength="100"></circle>
+          <circle class="exec-ring-value" cx="70" cy="70" r="57" pathLength="100" stroke-dasharray="{{ report.get('overall_score', 0) }} 100"></circle>
+        </svg>
+        <div><strong>{{ report.get('overall_score', 0) }}</strong><span>/100</span></div>
+        <p>Opportunity priority</p>
       </div>
-    </details>
-  </section>
+      <div class="exec-cover-stats">
+        <div><span>Review status</span><strong>{{ report.get('website_status') }}</strong></div>
+        <div><span>Recorded findings</span><strong>{{ report.get('finding_count', 0) }}</strong></div>
+        <div><span>High priority</span><strong>{{ report.get('high_count', 0) }}</strong></div>
+        <div><span>Medium priority</span><strong>{{ report.get('medium_count', 0) }}</strong></div>
+      </div>
+    </section>
 
-  <section class="recommendation-card">
-    <div class="recommendation-copy">
-      <p class="report-kicker">OPTIONAL HOSTING COMPARISON</p>
-      <h2>{{ report.get('recommended_plan') }}</h2>
-      <p>Consider a platform or hosting change only when it improves reliability, ownership, maintainability, or the customer journey. Compare the current introductory term, included features, renewal price, and cancellation conditions before purchasing.</p>
-      <p class="affiliate-disclosure">Disclosure: {{ sender_name|default('David Brown', true) }} is an independent Hostinger affiliate and may earn a commission if you purchase through this button. This report is not produced by Hostinger, and outcomes are not guaranteed.</p>
-    </div>
-    <div class="recommendation-action"><a class="report-cta" href="/go/{{ token }}" rel="nofollow sponsored">Compare current Hostinger options <span aria-hidden="true">→</span></a><small>Opens the current official offer</small></div>
-  </section>
+    <section class="exec-context-note">
+      <span>Scope</span>
+      <p>This report summarizes a bounded automated review of publicly accessible website information. It is not a full Lighthouse, legal, accessibility, penetration, traffic, revenue, ranking, or conversion audit. Verify current conditions before acting.</p>
+    </section>
 
-  <section class="transparency-grid">
-    <article><strong>No invisible tracking</strong><p>No tracking pixel or hidden open tracking is used. Affiliate clicks are stored with privacy-hashed request data.</p></article>
-    <article><strong>Public evidence only</strong><p>The review uses publicly accessible website information and does not claim access to private analytics, traffic, revenue, or customer data.</p></article>
-    <article><strong>Point-in-time limitations</strong><p>Websites and hosting terms change. Recheck the live site and current provider terms before acting.</p></article>
-  </section>
+    <section class="exec-section" id="scorecard">
+      <header class="exec-section-header"><div><span class="exec-section-number">02</span><p>PERFORMANCE OVERVIEW</p><h2>Executive scorecard</h2></div><p>Four heuristic dimensions provide a quick orientation. Missing evidence is shown as not measured rather than estimated.</p></header>
+      <div class="exec-scorecards">
+        {% for item in report.get('scores', []) %}
+        <article>
+          <div class="exec-scorecard-head"><span>{{ item.get('name') }}</span><strong>{{ item.get('value') if item.get('value') is not none else '—' }}</strong></div>
+          <progress max="100" value="{{ item.get('value') or 0 }}">{{ item.get('value') or 0 }}</progress>
+          <small>{{ 'Observed evidence score' if item.get('value') is not none else 'Not measured in this review' }}</small>
+        </article>
+        {% endfor %}
+      </div>
+      <p class="exec-score-explainer"><strong>How to read the score:</strong> the overall number represents verified improvement opportunity. A higher number does not mean the business or website is “bad.”</p>
+    </section>
 
-  <footer class="report-footer">
-    <div><strong>{{ sender_name|default('David Brown', true) }}</strong><span>{{ sender_role|default('Independent Hostinger Affiliate', true) }}</span></div>
-    <div><a href="/u/{{ unsubscribe_token }}">Stop future outreach</a><span>Private signed report · Excluded from search indexing</span></div>
-  </footer>
-</main>
+    <section class="exec-section" id="findings">
+      <header class="exec-section-header"><div><span class="exec-section-number">03</span><p>EVIDENCE REGISTER</p><h2>Key findings</h2></div><p>Prioritized observations from the captured website sample. Retest time-sensitive items before implementation.</p></header>
+      <div class="exec-findings">
+        {% for finding in report.get('findings', []) %}
+        <article class="exec-finding exec-severity-{{ finding.get('severity') }}">
+          <div class="exec-finding-index">{{ '%02d'|format(loop.index) }}</div>
+          <div class="exec-finding-body"><div><span class="exec-risk">{{ finding.get('severity')|upper }}</span><span>{{ finding.get('category') }}</span></div><p>{{ finding.get('text') }}</p><small>Evidence confidence · {{ finding.get('confidence') }}</small></div>
+        </article>
+        {% else %}
+        <article class="exec-finding exec-severity-advisory"><div class="exec-finding-index">01</div><div class="exec-finding-body"><div><span class="exec-risk">ADVISORY</span><span>Customer journey</span></div><p>No major issue was verified in this bounded review. Prioritize direct customer-journey testing before considering a rebuild.</p></div></article>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="exec-section" id="roadmap">
+      <header class="exec-section-header"><div><span class="exec-section-number">04</span><p>IMPLEMENTATION PRIORITIES</p><h2>Action roadmap</h2></div><p>Address the smallest verified customer-impact issue first, measure the result, then decide whether more work is justified.</p></header>
+      <div class="exec-roadmap">
+        {% for phase in report.get('roadmap', []) %}
+        <article><div class="exec-roadmap-head"><span>{{ phase.get('phase') }}</span><small>{{ phase.get('window') }}</small></div><ol>{% for item in phase.get('items', []) %}<li><span>{{ loop.index }}</span><p>{{ item }}</p></li>{% endfor %}</ol></article>
+        {% endfor %}
+      </div>
+      {% if report.get('opportunity') %}<div class="exec-focus"><span>RECOMMENDED FOCUS</span><p>{{ report.get('opportunity') }}</p></div>{% endif %}
+    </section>
+
+    <section class="exec-recommendation" id="recommendation">
+      <div class="exec-recommendation-label">05 · OPTIONAL PLATFORM COMPARISON</div>
+      <div class="exec-recommendation-grid">
+        <div><p>Recommended comparison starting point</p><h2>{{ report.get('recommended_plan') }}</h2><p>A platform or hosting change only makes sense when it improves reliability, ownership, maintainability, or the customer journey. Review current term length, included features, renewal pricing and cancellation conditions before purchasing.</p></div>
+        <div class="exec-recommendation-cta"><a href="/go/{{ token }}" rel="nofollow sponsored">Compare the current Hostinger offer <span>↗</span></a><small>Opens the official current offer</small></div>
+      </div>
+      <p class="exec-affiliate-note">Independent affiliate disclosure: {{ sender_name|default('David Brown', true) }} may earn a commission from a qualifying purchase through this button. This report is not produced or endorsed by Hostinger. No outcome is guaranteed.</p>
+    </section>
+
+    <section class="exec-section exec-appendix" id="appendix">
+      <details>
+        <summary><div><span class="exec-section-number">06</span><p>TECHNICAL APPENDIX</p><h2>Selected review facts</h2></div><span class="exec-expand">+</span></summary>
+        <div class="exec-technical-grid">{% for item in report.get('technical', []) %}<div><span>{{ item.get('label') }}</span><strong>{{ item.get('value') }}</strong></div>{% endfor %}</div>
+      </details>
+    </section>
+
+    <section class="exec-methodology">
+      <article><span>01</span><div><strong>No invisible tracking</strong><p>No tracking pixel or hidden open tracking. Affiliate clicks use privacy-hashed request data.</p></div></article>
+      <article><span>02</span><div><strong>Public evidence only</strong><p>No private analytics, customer records, revenue, traffic or internal performance data were accessed.</p></div></article>
+      <article><span>03</span><div><strong>Evidence before recommendation</strong><p>Fix verified issues first. Migration is optional and should be justified by measurable needs.</p></div></article>
+    </section>
+
+    <footer class="exec-footer">
+      <div><strong>{{ sender_name|default('David Brown', true) }}</strong><span>{{ sender_role|default('Independent Hostinger Affiliate', true) }}</span></div>
+      <div><a href="/u/{{ unsubscribe_token }}">Stop future outreach</a><span>{{ report.get('report_id') }} · Private signed report · Noindex</span></div>
+    </footer>
+  </main>
+</div>
 </body>
 </html>

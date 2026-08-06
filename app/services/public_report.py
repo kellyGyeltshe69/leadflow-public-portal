@@ -104,7 +104,15 @@ def build_public_report(lead, business, landing, content: dict) -> dict[str, obj
         f"{high_count} high priority and {medium_count} medium priority. "
         "Verify each observation on the current site before making a platform or hosting decision."
     )
+    checklist_items = [str(item) for item in checklist]
+    roadmap = [
+        {"phase": "Now", "window": "First priority", "items": checklist_items[:2]},
+        {"phase": "Next", "window": "After verification", "items": checklist_items[2:4]},
+        {"phase": "Later", "window": "Optional refinement", "items": checklist_items[4:]},
+    ]
+    roadmap = [phase for phase in roadmap if phase["items"]]
     return {
+        "report_id": f"LF-{int(lead.id):06d}",
         "business_name": business.name,
         "industry": lead.industry,
         "location": ", ".join(item for item in (lead.city, lead.state) if item),
@@ -114,9 +122,14 @@ def build_public_report(lead, business, landing, content: dict) -> dict[str, obj
         "reviewed_at": lead.last_verified_at,
         "overall_score": overall,
         "summary": summary,
+        "finding_count": len(findings),
+        "high_count": high_count,
+        "medium_count": medium_count,
+        "advisory_count": len(findings) - high_count - medium_count,
         "findings": findings,
         "scores": scores,
-        "checklist": [str(item) for item in checklist],
+        "checklist": checklist_items,
+        "roadmap": roadmap,
         "technical": technical,
         "opportunity": str(content.get("opportunity") or lead.opportunity or ""),
         "recommended_plan": landing.recommended_plan,
