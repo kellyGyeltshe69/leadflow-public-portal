@@ -8,7 +8,7 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#071116">
   <title>{{ report.get('business_name') }} · Executive website review</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=1.7.0">
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=1.7.1">
 </head>
 <body class="exec-report-page">
 <div class="exec-report-layout">
@@ -44,12 +44,15 @@
         </div>
       </div>
       <div class="exec-cover-score">
-        <svg viewBox="0 0 140 140" role="img" aria-label="Opportunity priority {{ report.get('overall_score', 0) }} out of 100">
-          <circle class="exec-ring-track" cx="70" cy="70" r="57" pathLength="100"></circle>
-          <circle class="exec-ring-value" cx="70" cy="70" r="57" pathLength="100" stroke-dasharray="{{ report.get('overall_score', 0) }} 100"></circle>
-        </svg>
-        <div><strong>{{ report.get('overall_score', 0) }}</strong><span>/100</span></div>
+        <div class="exec-score-visual">
+          <svg viewBox="0 0 140 140" role="img" aria-label="Opportunity priority {{ report.get('overall_score', 0) }} out of 100">
+            <circle class="exec-ring-track" cx="70" cy="70" r="57" pathLength="100"></circle>
+            <circle class="exec-ring-value" cx="70" cy="70" r="57" pathLength="100" stroke-dasharray="{{ report.get('overall_score', 0) }} 100"></circle>
+          </svg>
+          <div class="exec-score-number"><strong>{{ report.get('overall_score', 0) }}</strong><span>/100</span></div>
+        </div>
         <p>Opportunity priority</p>
+        <small>Verified improvement opportunity</small>
       </div>
       <div class="exec-cover-stats">
         <div><span>Review status</span><strong>{{ report.get('website_status') }}</strong></div>
