@@ -133,6 +133,19 @@ def set_env_line(text: str, key: str, value: str) -> str:
     return text.rstrip() + "\n" + replacement + "\n"
 
 
+PROJECT_SENDER_EMAIL = "david@leadflow.indevs.in"
+
+
+def migrate_project_sender_email(text: str, values: dict[str, str], *, created: bool = False) -> str:
+    """Move only this deployment's blank/legacy personal From identity to its business alias."""
+    sender_email = values.get("SENDER_EMAIL", "").strip().lower()
+    if created or sender_email in {"", "david@yourdomain.com"} or sender_email.endswith("@gmail.com"):
+        # The private Gmail account remains the Composio login/forwarding inbox.
+        # Sending still defaults off and Gmail must verify this alias before use.
+        return set_env_line(text, "SENDER_EMAIL", PROJECT_SENDER_EMAIL)
+    return text
+
+
 def read_env(path: Path | None = None) -> dict[str, str]:
     path = path or ENV_FILE
     values: dict[str, str] = {}
@@ -269,6 +282,10 @@ def recover_previous_postgresql_env(*, use_venv: bool = True) -> Path | None:
         if ENV_FILE.exists() and not backup.exists():
             shutil.copy2(ENV_FILE, backup)
         shutil.copy2(candidate, ENV_FILE)
+        recovered_text = ENV_FILE.read_text(encoding="utf-8")
+        migrated_text = migrate_project_sender_email(recovered_text, read_env())
+        if migrated_text != recovered_text:
+            ENV_FILE.write_text(migrated_text, encoding="utf-8")
         with suppress(OSError):
             ENV_FILE.chmod(0o600)
         log(f"Recovered the reachable PostgreSQL configuration from {candidate.parent}.")
@@ -316,6 +333,8 @@ def ensure_env_file() -> tuple[dict[str, str], str | None]:
     llama_key = current.get("LLAMACPP_API_KEY", "")
     if created or not llama_key or llama_key.startswith("replace-") or llama_key == "change-me-local":
         text = set_env_line(text, "LLAMACPP_API_KEY", secrets.token_urlsafe(32))
+
+    text = migrate_project_sender_email(text, current, created=created)
 
     configured_database = current.get("DATABASE_URL", "").strip().lower()
     if configured_database.startswith("postgresql://") or configured_database.startswith("postgresql+"):

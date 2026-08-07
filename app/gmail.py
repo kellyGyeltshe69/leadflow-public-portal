@@ -4,6 +4,7 @@ import base64
 import binascii
 import logging
 import re
+from dataclasses import dataclass
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
 
@@ -22,8 +23,42 @@ log = logging.getLogger(__name__)
 OPTOUT_RE = re.compile(r"\b(unsubscribe|remove me|stop emailing|do not contact|no thanks|opt[ -]?out)\b", re.IGNORECASE)
 
 
+@dataclass(frozen=True)
+class GmailSenderIdentity:
+    """A sender address that Gmail has proved belongs to the connected account."""
+
+    connected_email: str
+    sender_email: str
+    sender_type: str
+    verification_status: str
+    is_default: bool | None = None
+    uses_external_smtp: bool = False
+
+    @property
+    def own_addresses(self) -> frozenset[str]:
+        return frozenset({self.connected_email, self.sender_email})
+
+    def report(self) -> dict[str, str | bool | None]:
+        return {
+            "ready": True,
+            # Do not expose the private forwarding/login address in dashboard
+            # screenshots or CLI output. It remains available only in memory
+            # for self-sender exclusion during reply classification.
+            "sender_email": self.sender_email,
+            "sender_type": self.sender_type,
+            "verification_status": self.verification_status,
+            "is_default": self.is_default,
+            "uses_external_smtp": self.uses_external_smtp,
+        }
+
+
 class GmailClient:
-    """Gmail API access with OAuth credentials injected by Composio."""
+    """Gmail API access with OAuth credentials injected by Composio.
+
+    SENDER_EMAIL may be either the connected account's primary address or an
+    accepted Gmail ``Send mail as`` alias. A different, unverified address is
+    always rejected before a message can be built or sent.
+    """
 
     def __init__(self) -> None:
         settings = get_settings()
@@ -33,13 +68,9 @@ class GmailClient:
         # Fail early if the pinned/unique Gmail connection is not ACTIVE.
         self.gateway.resolve_connection_id("gmail")
         self.settings = settings
-        profile_email = normalize_email(self.profile().get("emailAddress", ""))
-        if not profile_email:
-            raise RuntimeError("Could not verify the email address of the connected Gmail account")
-        if profile_email != normalize_email(settings.sender_email):
-            raise RuntimeError(
-                f"The connected Gmail account is {profile_email}, but SENDER_EMAIL is {settings.sender_email}. Refusing to use the wrong mailbox."
-            )
+        self.sender_identity = self._resolve_sender_identity()
+        self.authenticated_email = self.sender_identity.connected_email
+        self.own_addresses = self.sender_identity.own_addresses
 
     @staticmethod
     def _unwrap(data: object) -> dict:
@@ -57,15 +88,93 @@ class GmailClient:
             )
         )
 
+    def send_as_aliases(self) -> list[dict]:
+        """Return Gmail's own sender list; never infer aliases from configuration."""
+        try:
+            response = self._unwrap(
+                self.gateway.proxy(
+                    "gmail",
+                    "https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs",
+                    "GET",
+                )
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not verify Gmail send-as aliases through Composio. "
+                "Check the Gmail OAuth grant and reconnect it if its scopes changed."
+            ) from exc
+        aliases = response.get("sendAs")
+        if not isinstance(aliases, list):
+            raise RuntimeError("Gmail returned an unexpected send-as alias response")
+        return [item for item in aliases if isinstance(item, dict)]
+
+    def _resolve_sender_identity(self) -> GmailSenderIdentity:
+        configured_email = normalize_email(self.settings.sender_email)
+        if not configured_email or "@" not in configured_email:
+            raise RuntimeError("SENDER_EMAIL is not a valid email address")
+
+        try:
+            profile = self.profile()
+        except Exception as exc:
+            raise RuntimeError("Could not verify the connected Gmail profile through Composio") from exc
+        profile_email = normalize_email(profile.get("emailAddress", ""))
+        if not profile_email:
+            raise RuntimeError("Could not verify the email address of the connected Gmail account")
+        if profile_email == configured_email:
+            return GmailSenderIdentity(
+                connected_email=profile_email,
+                sender_email=configured_email,
+                sender_type="primary",
+                verification_status="primary",
+            )
+
+        matching_alias = next(
+            (
+                alias
+                for alias in self.send_as_aliases()
+                if normalize_email(str(alias.get("sendAsEmail", ""))) == configured_email
+            ),
+            None,
+        )
+        if matching_alias is None:
+            raise RuntimeError(
+                "SENDER_EMAIL does not match the connected Gmail account and is not configured "
+                "as a Gmail send-as alias. Add and verify it in Gmail, then recheck the connection."
+            )
+
+        verification_status = str(matching_alias.get("verificationStatus", "")).strip().lower()
+        if verification_status != "accepted":
+            status = verification_status or "unspecified"
+            raise RuntimeError(
+                f"The configured Gmail send-as alias is not ready (verification status: {status}). "
+                "Complete Gmail's address verification before sending."
+            )
+        return GmailSenderIdentity(
+            connected_email=profile_email,
+            sender_email=configured_email,
+            sender_type="verified_send_as_alias",
+            verification_status=verification_status,
+            is_default=bool(matching_alias.get("isDefault")),
+            uses_external_smtp=isinstance(matching_alias.get("smtpMsa"), dict),
+        )
+
+    def sender_report(self) -> dict[str, str | bool | None]:
+        """Return non-secret sender verification details for the admin/CLI."""
+        return self.sender_identity.report()
+
     def send(self, lead: Lead, message: Message) -> dict:
+        sender_email = self.sender_identity.sender_email
         email = EmailMessage()
         email["To"] = lead.contact_email
-        email["From"] = formataddr((self.settings.sender_name, self.settings.sender_email))
+        email["From"] = formataddr((self.settings.sender_name, sender_email))
+        # Replies must return to the public business identity even when the
+        # connected Gmail login is a private forwarding destination.
+        email["Reply-To"] = sender_email
         email["Subject"] = " ".join(message.subject.splitlines()).strip()
-        rfc_message_id = make_msgid(domain=self.settings.sender_email.split("@")[-1])
+        rfc_message_id = make_msgid(domain=sender_email.split("@")[-1])
         email["Message-ID"] = rfc_message_id
         optout = unsubscribe_url(lead)
-        email["List-Unsubscribe"] = f"<{optout}>, <mailto:{self.settings.sender_email}?subject=unsubscribe>"
+        email["List-Unsubscribe"] = f"<{optout}>, <mailto:{sender_email}?subject=unsubscribe>"
         email["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
         if lead.root_rfc_message_id and message.stage > 0:
             email["In-Reply-To"] = lead.root_rfc_message_id
@@ -151,7 +260,10 @@ def sync_gmail_replies(session: Session, demo_mode: bool | None = None) -> dict[
         )
     ).all()
     stats: dict[str, int | str] = {"checked": 0, "replies": 0, "optouts": 0, "bounces": 0}
-    sender = normalize_email(settings.sender_email)
+    # Exclude both the public send-as identity and the private authenticated
+    # Gmail address. Otherwise a message sent manually from the primary Gmail
+    # account inside a campaign thread could be misclassified as a lead reply.
+    own_addresses = client.own_addresses
     for lead in leads:
         stats["checked"] = int(stats["checked"]) + 1
         if not lead.gmail_thread_id:
@@ -165,7 +277,7 @@ def sync_gmail_replies(session: Session, demo_mode: bool | None = None) -> dict[
         for raw in thread.get("messages", []):
             headers = _headers(raw)
             from_email = normalize_email(headers.get("from", ""))
-            if not from_email or from_email == sender:
+            if not from_email or from_email in own_addresses:
                 continue
             inbound.append((headers, _payload_text(raw.get("payload") or {}), from_email, raw.get("id")))
         if not inbound:

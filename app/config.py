@@ -167,7 +167,8 @@ class Settings(BaseSettings):
 
     @property
     def gmail_ready(self) -> bool:
-        # Live connection status is checked through Composio before every send/sync.
+        # This is the configuration gate only. GmailClient checks the live
+        # primary address or accepted send-as alias before every send/sync batch.
         return bool(self.composio_ready and self.sender_email.strip())
 
     @property

@@ -7,6 +7,7 @@ from .ai import ai_backend_report
 from .composio_gateway import ComposioGateway
 from .config import get_settings
 from .db import init_db
+from .gmail import GmailClient
 from .pipeline import (
     discover_job,
     ensure_default_campaign,
@@ -23,7 +24,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="LeadFlow maintenance commands")
     parser.add_argument(
         "command",
-        choices=["discover", "fast-start", "refresh-links", "send", "sync", "sheet", "connections", "ai", "mode-status", "mode-demo", "mode-live", "gates"],
+        choices=[
+            "discover", "fast-start", "refresh-links", "send", "sync", "sheet",
+            "connections", "gmail-sender", "ai", "mode-status", "mode-demo", "mode-live", "gates",
+        ],
     )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
@@ -44,6 +48,8 @@ def main() -> None:
         result = sync_google_sheet_job()
     elif args.command == "connections":
         result = ComposioGateway().connection_report()
+    elif args.command == "gmail-sender":
+        result = GmailClient().sender_report()
     elif args.command == "ai":
         result = ai_backend_report(demo_mode=get_runtime_mode() == "demo")
     elif args.command == "mode-status":

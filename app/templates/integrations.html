@@ -4,6 +4,11 @@
 <div class="page-head"><div><p class="eyebrow">LOCAL AI + COMPOSIO-MANAGED GOOGLE</p><h1>AI, Google & Gmail control</h1><p>Ollama drafts locally. LeadFlow chooses deterministic Google actions while Composio stores and refreshes credentials.</p></div></div>
 <section class="gate {{ 'ready' if ai_report.get('ready') else 'blocked' }}"><strong>Local AI: {{ ai_report.get('provider') }}</strong><span>{{ ai_report.get('model','') }} · {{ ai_report.get('detail','') }}</span></section>
 <section class="gate {{ 'ready' if settings.composio_ready else 'blocked' }}"><strong>{{ 'Composio API configured' if settings.composio_ready else 'Composio API key missing' }}</strong><span>User scope: {{ settings.composio_user_id }}</span></section>
+{% set sender = gmail_sender_report or {} %}
+<section class="gate {{ 'ready' if sender.get('ready') else 'blocked' }}">
+  <strong>{% if sender.get('ready') %}Gmail sender verified{% else %}Gmail sender not verified{% endif %}</strong>
+  <span>{% if sender.get('ready') %}<code>{{ sender.get('sender_email') }}</code> is authorized as {{ 'an accepted send-as alias' if sender.get('sender_type') == 'verified_send_as_alias' else 'the primary Gmail address' }}. Replies are explicitly directed to this business address.{% else %}{{ sender.get('error', 'Sender verification is unavailable.') }}{% endif %}</span>
+</section>
 <div class="grid three">
 {% for toolkit, label in [('gmail','Gmail'),('google_maps','Google Maps / Places'),('googlesheets','Google Sheets')] %}
 {% set item = report.get(toolkit, {}) %}

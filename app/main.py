@@ -47,7 +47,7 @@ from .core.middleware import (
 )
 from .database.saas_models import EmailRecord, LogRecord, TaskRecord, User
 from .db import init_db, session_scope
-from .gmail import cancel_future_messages
+from .gmail import GmailClient, cancel_future_messages
 from .models import Campaign, DoNotContact, JobRun, Lead, Message, utcnow
 from .outreach import compose_final_body
 from .pipeline import (
@@ -104,6 +104,11 @@ async def lifespan(_app: FastAPI):
     ensure_system_state()
     ensure_default_campaign()
     if settings.sending_enabled:
+        # Fail closed before the scheduler starts: the configured From address
+        # must be either the authenticated Gmail address or an accepted Gmail
+        # send-as alias on that exact connected account.
+        sender_identity = GmailClient().sender_identity
+        log.info("Gmail sender identity verified: %s", sender_identity.sender_type)
         # Never allow a sending-enabled local process to start before stale
         # report/opt-out links have been refreshed and validated.
         refresh_result = refresh_unsent_outreach_links()
@@ -132,7 +137,7 @@ async def lifespan(_app: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title=settings.app_name, version="1.7.1", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="1.8.0", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.app_secret,
@@ -513,6 +518,11 @@ def discovery_status():
 def integrations_page(request: Request):
     report = {toolkit: {"active": False, "connection_id": "", "error": "Composio is not configured"} for toolkit in TOOLKITS}
     active_connections = []
+    gmail_sender_report: dict[str, str | bool | None] = {
+        "ready": False,
+        "sender_email": settings.sender_email,
+        "error": "Connect Gmail and configure SENDER_EMAIL to verify the sender.",
+    }
     if settings.composio_ready:
         try:
             gateway = ComposioGateway()
@@ -520,10 +530,20 @@ def integrations_page(request: Request):
             active_connections = gateway.active_connections()
         except Exception as exc:
             report["_error"] = {"active": False, "connection_id": "", "error": str(exc)}
+        if report.get("gmail", {}).get("active") and settings.gmail_ready:
+            try:
+                gmail_sender_report = GmailClient().sender_report()
+            except Exception as exc:
+                gmail_sender_report = {
+                    "ready": False,
+                    "sender_email": settings.sender_email,
+                    "error": _safe_job_error(str(exc)),
+                }
     return templates.TemplateResponse(request=request, name="integrations.html", context=context(
         request,
         report=report,
         active_connections=active_connections,
+        gmail_sender_report=gmail_sender_report,
         ai_report=ai_backend_report(demo_mode=get_runtime_mode() == "demo"),
         message=request.query_params.get("message"),
         error=request.query_params.get("error"),
