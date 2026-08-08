@@ -1,12 +1,13 @@
 # Free public report portal (Render + Neon)
 
-This mode keeps discovery, website auditing, Ollama, Gmail, and the administrator dashboard on your Windows computer. A small hosted FastAPI process serves only the signed public report, affiliate redirect, and opt-out routes:
+This mode keeps discovery, website auditing, AI, Gmail, and the administrator dashboard on your Windows computer. A small hosted FastAPI process serves the signed public report, affiliate redirect, opt-out routes, and one fixed shared email-logo asset:
 
 ```text
 /r/{short-token}
 /go/{short-token}
 /u/{short-token}
 /unsubscribe/{legacy-token}  # backward compatibility
+/email-assets/leadflow-logo.png  # shared, cacheable, no recipient token
 ```
 
 Both local LeadFlow and the hosted portal use the same Neon PostgreSQL database and the same `APP_SECRET`. That makes report links, click records, and opt-outs immediately visible to the local application without exposing Composio or Gmail credentials to Render. The public report uses a responsive professional layout with an executive summary, bounded score dimensions, severity findings, action plan, selected non-sensitive technical facts, optional disclosed hosting comparison and print styling.
@@ -40,7 +41,7 @@ If Render builds successfully but reports a missing installed Python module at s
 python .\start.py --update-public-portal
 ```
 
-This command preserves remote Git history, changes no Neon/Render secrets, pushes the corrected source, opens Render, and waits for an automatic redeploy when a valid public URL is already configured.
+This command preserves remote Git history, changes no Neon/Render secrets, pushes the corrected source and shared logo, opens Render, and waits for the existing service to redeploy. Run it once for v1.14.0 so Gmail can load the logo without a MIME attachment.
 
 ## Repair an existing failed Render service
 

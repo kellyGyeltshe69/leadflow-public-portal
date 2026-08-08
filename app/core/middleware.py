@@ -40,7 +40,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             if path.startswith(prefix):
                 metric_path = template
                 break
-        if not path.startswith("/static/"):
+        if not path.startswith(("/static/", "/email-assets/")):
             REQUESTS.labels(request.method, metric_path, response.status_code).inc()
             LATENCY.labels(request.method, metric_path).observe(time.perf_counter() - started)
         return response

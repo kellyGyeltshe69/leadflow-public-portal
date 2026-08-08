@@ -30,6 +30,7 @@ from .utils import domain_of, normalize_business_name, normalize_email
 log = logging.getLogger(__name__)
 OFFSETS = {0: 0, 1: 3, 2: 7, 3: 14}
 _DISCOVERY_LOCK = threading.Lock()
+_SEND_DUE_LOCK = threading.Lock()
 
 
 def _utc_date():
@@ -765,10 +766,15 @@ def reverify_lead(lead_id: int) -> dict:
         raise
 
 
-def approve_lead(lead_id: int) -> None:
+def approve_lead(lead_id: int, *, send_initial_now: bool = False) -> None:
     settings = get_settings()
     if not settings.postal_ready:
         raise ValueError("Add a valid PHYSICAL_POSTAL_ADDRESS before approving outreach")
+    if send_initial_now:
+        if not settings.production_send_ready_for(get_runtime_mode() == "demo"):
+            raise ValueError("Production sending is blocked. Complete every send gate before using Approve & send now.")
+        if not settings.mailbox_authentication_confirmed:
+            raise ValueError("Confirm the controlled SPF/DKIM/DMARC test before using Approve & send now.")
     with session_scope() as session:
         lead = session.scalar(select(Lead).options(selectinload(Lead.messages)).where(Lead.id == lead_id))
         if not lead:
@@ -777,6 +783,13 @@ def approve_lead(lead_id: int) -> None:
             raise ValueError("Demo leads cannot be approved for sending. Switch to Live mode and discover real leads.")
         if lead.status not in {"pending_approval", "approved"}:
             raise ValueError(f"Lead status {lead.status!r} cannot be approved")
+        if send_initial_now and lead.status != "pending_approval":
+            raise ValueError("Approve & send now is available only for a lead still awaiting human approval")
+        now = utcnow()
+        if send_initial_now and not in_business_window(now, lead.timezone_name):
+            raise ValueError(
+                "The recipient is outside the configured local business-hour window. Use Approve and schedule instead."
+            )
         if settings.email_ai_quality_gate_enabled:
             quality_review = (lead.audit_facts or {}).get("email_quality_review") or {}
             if not quality_review.get("approved"):
@@ -785,9 +798,11 @@ def approve_lead(lead_id: int) -> None:
                 )
         if not lead.contact_email or _dnc(session, lead.contact_email):
             raise ValueError("The public email is missing or on the do-not-contact list")
-        if not lead.last_verified_at or utcnow() - lead.last_verified_at > timedelta(days=3):
+        if not lead.last_verified_at or now - lead.last_verified_at > timedelta(days=3):
             raise ValueError("Reverify this lead before approval; verification is older than three days")
-        initial_at = next_business_send(utcnow(), lead.timezone_name, 0)
+        if send_initial_now and not any(message.stage == 0 for message in lead.messages):
+            raise ValueError("The lead has no initial message to send")
+        initial_at = now if send_initial_now else next_business_send(now, lead.timezone_name, 0)
         strategy_days = (
             ((lead.audit_facts or {}).get("ai_intelligence") or {})
             .get("followup_strategy", {})
@@ -800,13 +815,16 @@ def approve_lead(lead_id: int) -> None:
             errors = validate_send_body(lead, message)
             if errors:
                 raise ValueError("; ".join(errors))
-            message.planned_at = next_business_send(initial_at, lead.timezone_name, message.day_offset)
+            if send_initial_now and message.stage == 0:
+                message.planned_at = now
+            else:
+                message.planned_at = next_business_send(initial_at, lead.timezone_name, message.day_offset)
             message.status = "scheduled"
             message.error = None
             sync_email_from_legacy(session, lead, message)
         lead.status = "approved"
         sync_business_from_legacy(session, lead)
-        lead.approved_at = utcnow()
+        lead.approved_at = now
 
 
 def reject_lead(lead_id: int, reason: str) -> None:
@@ -823,9 +841,20 @@ def reject_lead(lead_id: int, reason: str) -> None:
             sync_email_from_legacy(session, lead, message)
 
 
-def send_due_job() -> dict:
+def send_due_job(lead_id: int | None = None) -> dict:
+    """Send due messages, optionally restricted to one lead's initial message."""
+    if not _SEND_DUE_LOCK.acquire(blocking=False):
+        return {
+            "status": "running",
+            "reason": "Another send-queue job is already running; no duplicate send was started.",
+            "target_lead_id": lead_id,
+        }
     result: dict[str, object]
-    job_id = _job_start("send_due")
+    try:
+        job_id = _job_start("send_due_now" if lead_id is not None else "send_due")
+    except Exception:
+        _SEND_DUE_LOCK.release()
+        raise
     settings = get_settings()
     runtime_mode = get_runtime_mode()
     demo_mode = runtime_mode == "demo"
@@ -858,16 +887,22 @@ def send_due_job() -> dict:
             ) or 0
             available_total = max(0, settings.effective_total_send_limit - total_sent_today)
             available_initial = max(0, settings.daily_new_lead_limit - initial_sent_today)
+            due_query = select(Message).options(
+                selectinload(Message.lead).selectinload(Lead.messages)
+            ).where(
+                Message.status.in_(["scheduled", "retry"]),
+                Message.planned_at <= now,
+                Message.lead.has(Lead.data_mode == "live"),
+            )
+            if lead_id is not None:
+                # The immediate button is intentionally scoped to exactly one
+                # human-approved lead and can never release a follow-up stage.
+                due_query = due_query.where(Message.lead_id == lead_id, Message.stage == 0)
             due = session.scalars(
-                select(Message)
-                .options(selectinload(Message.lead).selectinload(Lead.messages))
-                .where(
-                    Message.status.in_(["scheduled", "retry"]),
-                    Message.planned_at <= now,
-                    Message.lead.has(Lead.data_mode == "live"),
-                )
+                due_query
                 .order_by(Message.planned_at)
                 .limit(available_total)
+                .with_for_update(skip_locked=True)
             ).all()
             sent = 0
             skipped = 0
@@ -877,7 +912,11 @@ def send_due_job() -> dict:
                 if message.stage == 0 and available_initial <= 0:
                     skipped += 1
                     continue
-                if lead.status in {"replied", "opted_out", "bounced", "rejected", "do_not_contact"} or _dnc(session, lead.contact_email):
+                if (
+                    lead.status in {"replied", "opted_out", "bounced", "rejected", "do_not_contact"}
+                    or lead.conversion_status == "converted"
+                    or _dnc(session, lead.contact_email)
+                ):
                     message.status = "cancelled"
                     message.error = "Lead no longer eligible"
                     skipped += 1
@@ -931,6 +970,7 @@ def send_due_job() -> dict:
                 "configured_total_cap": settings.daily_total_send_limit,
                 "effective_total_cap": settings.effective_total_send_limit,
                 "runtime_mode": runtime_mode,
+                "target_lead_id": lead_id,
             }
         _job_finish(job_id, str(result))
         return result
@@ -938,6 +978,8 @@ def send_due_job() -> dict:
         log.exception("Send job failed")
         _job_finish(job_id, error=str(exc))
         raise
+    finally:
+        _SEND_DUE_LOCK.release()
 
 
 def sync_replies_job() -> dict:

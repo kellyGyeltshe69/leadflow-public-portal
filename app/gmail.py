@@ -17,7 +17,12 @@ from .database.saas_models import Reply
 from .models import DoNotContact, Lead, Message, utcnow
 from .outreach import unsubscribe_url
 from .services.compat_sync import sync_business_from_legacy, sync_email_from_legacy
-from .utils import normalize_email
+from .services.email_html import (
+    add_branded_html_alternative,
+    render_controlled_test_html,
+    render_outreach_html,
+)
+from .utils import EMAIL_RE, normalize_email
 
 log = logging.getLogger(__name__)
 OPTOUT_RE = re.compile(r"\b(unsubscribe|remove me|stop emailing|do not contact|no thanks|opt[ -]?out)\b", re.IGNORECASE)
@@ -31,20 +36,27 @@ class GmailSenderIdentity:
     sender_email: str
     sender_type: str
     verification_status: str
+    reply_to_email: str = ""
     is_default: bool | None = None
     uses_external_smtp: bool = False
 
     @property
+    def reply_address(self) -> str:
+        return self.reply_to_email or self.sender_email
+
+    @property
     def own_addresses(self) -> frozenset[str]:
-        return frozenset({self.connected_email, self.sender_email})
+        return frozenset({self.connected_email, self.sender_email, self.reply_address})
 
     def report(self) -> dict[str, str | bool | None]:
+        primary_from_mode = self.sender_type == "primary_with_business_reply_to"
         return {
             "ready": True,
-            # Do not expose the private forwarding/login address in dashboard
-            # screenshots or CLI output. It remains available only in memory
-            # for self-sender exclusion during reply classification.
-            "sender_email": self.sender_email,
+            # Never expose the private forwarding/login address in dashboard
+            # screenshots or CLI output when free primary-From mode is active.
+            "sender_email": "" if primary_from_mode else self.sender_email,
+            "sender_email_hidden": primary_from_mode,
+            "reply_to_email": self.reply_address,
             "sender_type": self.sender_type,
             "verification_status": self.verification_status,
             "is_default": self.is_default,
@@ -56,8 +68,9 @@ class GmailClient:
     """Gmail API access with OAuth credentials injected by Composio.
 
     SENDER_EMAIL may be either the connected account's primary address or an
-    accepted Gmail ``Send mail as`` alias. A different, unverified address is
-    always rejected before a message can be built or sent.
+    accepted Gmail ``Send mail as`` alias. In zero-cost primary-From mode, the
+    authenticated Gmail profile is the visible From address and the verified
+    business alias is used only for Reply-To. Unverified addresses fail closed.
     """
 
     def __init__(self) -> None:
@@ -124,6 +137,7 @@ class GmailClient:
             return GmailSenderIdentity(
                 connected_email=profile_email,
                 sender_email=configured_email,
+                reply_to_email=configured_email,
                 sender_type="primary",
                 verification_status="primary",
             )
@@ -149,9 +163,20 @@ class GmailClient:
                 f"The configured Gmail send-as alias is not ready (verification status: {status}). "
                 "Complete Gmail's address verification before sending."
             )
+        if bool(getattr(self.settings, "gmail_free_primary_from_mode", False)):
+            return GmailSenderIdentity(
+                connected_email=profile_email,
+                sender_email=profile_email,
+                reply_to_email=configured_email,
+                sender_type="primary_with_business_reply_to",
+                verification_status=verification_status,
+                is_default=None,
+                uses_external_smtp=False,
+            )
         return GmailSenderIdentity(
             connected_email=profile_email,
             sender_email=configured_email,
+            reply_to_email=configured_email,
             sender_type="verified_send_as_alias",
             verification_status=verification_status,
             is_default=bool(matching_alias.get("isDefault")),
@@ -162,29 +187,12 @@ class GmailClient:
         """Return non-secret sender verification details for the admin/CLI."""
         return self.sender_identity.report()
 
-    def send(self, lead: Lead, message: Message) -> dict:
-        sender_email = self.sender_identity.sender_email
-        email = EmailMessage()
-        email["To"] = lead.contact_email
-        email["From"] = formataddr((self.settings.sender_name, sender_email))
-        # Replies must return to the public business identity even when the
-        # connected Gmail login is a private forwarding destination.
-        email["Reply-To"] = sender_email
-        email["Subject"] = " ".join(message.subject.splitlines()).strip()
-        rfc_message_id = make_msgid(domain=sender_email.split("@")[-1])
-        email["Message-ID"] = rfc_message_id
-        optout = unsubscribe_url(lead)
-        email["List-Unsubscribe"] = f"<{optout}>, <mailto:{sender_email}?subject=unsubscribe>"
-        email["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
-        if lead.root_rfc_message_id and message.stage > 0:
-            email["In-Reply-To"] = lead.root_rfc_message_id
-            email["References"] = lead.root_rfc_message_id
-        email.set_content(message.body_final)
+    def _send_raw_message(self, email: EmailMessage, *, thread_id: str | None = None) -> dict:
         raw = base64.urlsafe_b64encode(email.as_bytes()).decode()
-        body = {"raw": raw}
-        if lead.gmail_thread_id and message.stage > 0:
-            body["threadId"] = lead.gmail_thread_id
-        sent = self._unwrap(
+        body: dict[str, str] = {"raw": raw}
+        if thread_id:
+            body["threadId"] = thread_id
+        return self._unwrap(
             self.gateway.proxy(
                 "gmail",
                 "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
@@ -192,6 +200,80 @@ class GmailClient:
                 body=body,
             )
         )
+
+    def send_controlled_test(self, recipient_email: str) -> dict[str, str]:
+        """Send one non-campaign test while the production queue remains disabled."""
+        if self.settings.sending_enabled:
+            raise RuntimeError(
+                "Controlled sender testing requires SENDING_ENABLED=false so it cannot overlap the campaign queue"
+            )
+        recipient = normalize_email(recipient_email)
+        if not recipient or EMAIL_RE.fullmatch(recipient) is None:
+            raise ValueError("Enter a valid controlled recipient email address")
+
+        sender_email = self.sender_identity.sender_email
+        reply_to_email = self.sender_identity.reply_address
+        email = EmailMessage()
+        email["To"] = recipient
+        email["From"] = formataddr((self.settings.sender_name, sender_email))
+        email["Reply-To"] = reply_to_email
+        email["Subject"] = "LeadFlow controlled sender test"
+        email["Message-ID"] = make_msgid(domain=sender_email.split("@")[-1])
+        email["X-LeadFlow-Message-Type"] = "controlled-test"
+        plain_body = (
+            "This is a one-time controlled delivery test from LeadFlow.\n\n"
+            "Expected From: the authenticated Gmail account.\n"
+            f"Expected Reply-To: {reply_to_email}\n\n"
+            "No lead or campaign message was created. This email contains no affiliate link, "
+            "tracking pixel, or automatic follow-up. If this is an inbox you control, you may "
+            "reply with TEST REPLY to confirm the forwarding route manually."
+        )
+        email.set_content(plain_body)
+        if bool(getattr(self.settings, "html_email_enabled", True)):
+            add_branded_html_alternative(
+                email,
+                render_controlled_test_html(
+                    sender_name=self.settings.sender_name,
+                    reply_to_email=reply_to_email,
+                ),
+            )
+        sent = self._send_raw_message(email)
+        message_id = str(sent.get("id") or "")
+        thread_id = str(sent.get("threadId") or "")
+        if not message_id or not thread_id:
+            raise RuntimeError("Gmail did not return confirmation IDs for the controlled test")
+        return {
+            "status": "sent",
+            "sender_type": self.sender_identity.sender_type,
+            "reply_to_email": reply_to_email,
+            "recipient_email": recipient,
+            "gmail_message_id": message_id,
+            "thread_id": thread_id,
+        }
+
+    def send(self, lead: Lead, message: Message) -> dict:
+        sender_email = self.sender_identity.sender_email
+        reply_to_email = self.sender_identity.reply_address
+        email = EmailMessage()
+        email["To"] = lead.contact_email
+        email["From"] = formataddr((self.settings.sender_name, sender_email))
+        # In free mode Gmail's authenticated primary address is the visible
+        # From identity while replies return through the business alias.
+        email["Reply-To"] = reply_to_email
+        email["Subject"] = " ".join(message.subject.splitlines()).strip()
+        rfc_message_id = make_msgid(domain=sender_email.split("@")[-1])
+        email["Message-ID"] = rfc_message_id
+        optout = unsubscribe_url(lead)
+        email["List-Unsubscribe"] = f"<{optout}>, <mailto:{reply_to_email}?subject=unsubscribe>"
+        email["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+        if lead.root_rfc_message_id and message.stage > 0:
+            email["In-Reply-To"] = lead.root_rfc_message_id
+            email["References"] = lead.root_rfc_message_id
+        email.set_content(message.body_final)
+        if bool(getattr(self.settings, "html_email_enabled", True)):
+            add_branded_html_alternative(email, render_outreach_html(lead, message))
+        thread_id = lead.gmail_thread_id if message.stage > 0 else None
+        sent = self._send_raw_message(email, thread_id=thread_id)
         return {"gmail_message_id": sent.get("id"), "thread_id": sent.get("threadId"), "rfc_message_id": rfc_message_id}
 
     def thread(self, thread_id: str) -> dict:

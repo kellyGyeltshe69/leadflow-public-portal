@@ -283,7 +283,12 @@ def recover_previous_postgresql_env(*, use_venv: bool = True) -> Path | None:
             shutil.copy2(ENV_FILE, backup)
         shutil.copy2(candidate, ENV_FILE)
         recovered_text = ENV_FILE.read_text(encoding="utf-8")
-        migrated_text = migrate_project_sender_email(recovered_text, read_env())
+        recovered_values = read_env()
+        migrated_text = migrate_project_sender_email(recovered_text, recovered_values)
+        if "GMAIL_FREE_PRIMARY_FROM_MODE" not in recovered_values:
+            migrated_text = set_env_line(migrated_text, "GMAIL_FREE_PRIMARY_FROM_MODE", "true")
+        if "HTML_EMAIL_ENABLED" not in recovered_values:
+            migrated_text = set_env_line(migrated_text, "HTML_EMAIL_ENABLED", "true")
         if migrated_text != recovered_text:
             ENV_FILE.write_text(migrated_text, encoding="utf-8")
         with suppress(OSError):
@@ -335,6 +340,10 @@ def ensure_env_file() -> tuple[dict[str, str], str | None]:
         text = set_env_line(text, "LLAMACPP_API_KEY", secrets.token_urlsafe(32))
 
     text = migrate_project_sender_email(text, current, created=created)
+    if created or "GMAIL_FREE_PRIMARY_FROM_MODE" not in current:
+        text = set_env_line(text, "GMAIL_FREE_PRIMARY_FROM_MODE", "true")
+    if created or "HTML_EMAIL_ENABLED" not in current:
+        text = set_env_line(text, "HTML_EMAIL_ENABLED", "true")
 
     configured_database = current.get("DATABASE_URL", "").strip().lower()
     if configured_database.startswith("postgresql://") or configured_database.startswith("postgresql+"):

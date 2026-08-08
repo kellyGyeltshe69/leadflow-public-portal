@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, text
@@ -26,6 +27,7 @@ from .utils import normalize_email
 
 settings = get_settings()
 templates = Jinja2Templates(directory="app/templates")
+EMAIL_LOGO_PATH = Path("app/static/media/leadflow-logo-email.png")
 
 
 def _portal_origin() -> str:
@@ -84,7 +86,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="LeadFlow Public Report Portal",
-    version="1.8.0",
+    version="1.14.0",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
@@ -105,6 +107,19 @@ async def portal_response_policy(request: Request, call_next):
     if request.url.path.startswith(("/r/", "/go/", "/u/", "/unsubscribe/")):
         _private_page_headers(response)
     return response
+
+
+@app.get("/email-assets/leadflow-logo.png", include_in_schema=False)
+def email_logo():
+    return FileResponse(
+        EMAIL_LOGO_PATH,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=604800, immutable",
+            "Cross-Origin-Resource-Policy": "cross-origin",
+            "X-Robots-Tag": "noindex, nofollow, noarchive",
+        },
+    )
 
 
 @app.get("/health")

@@ -32,7 +32,7 @@ def compose_final_body(lead: Lead, message: Message, allow_postal_placeholder: b
             "if you purchase through that link."
         )
     footer = (
-        f"\n\n{settings.sender_name}\n{settings.sender_role}\nReply to this email\n\n"
+        f"\n\n{settings.sender_name}\n{settings.sender_role}\n{settings.sender_email}\nReply to this email\n\n"
         "This is a one-to-one business inquiry based on publicly listed business contact information. "
         "If it is not relevant, reply 'no thanks' or use the opt-out link and I will not contact you again.\n"
         f"Opt out: {unsubscribe_url(lead)}\n{postal}"

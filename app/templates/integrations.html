@@ -6,8 +6,21 @@
 <section class="gate {{ 'ready' if settings.composio_ready else 'blocked' }}"><strong>{{ 'Composio API configured' if settings.composio_ready else 'Composio API key missing' }}</strong><span>User scope: {{ settings.composio_user_id }}</span></section>
 {% set sender = gmail_sender_report or {} %}
 <section class="gate {{ 'ready' if sender.get('ready') else 'blocked' }}">
-  <strong>{% if sender.get('ready') %}Gmail sender verified{% else %}Gmail sender not verified{% endif %}</strong>
-  <span>{% if sender.get('ready') %}<code>{{ sender.get('sender_email') }}</code> is authorized as {{ 'an accepted send-as alias' if sender.get('sender_type') == 'verified_send_as_alias' else 'the primary Gmail address' }}. Replies are explicitly directed to this business address.{% else %}{{ sender.get('error', 'Sender verification is unavailable.') }}{% endif %}</span>
+  <strong>{% if sender.get('ready') and sender.get('sender_type') == 'primary_with_business_reply_to' %}Free Gmail sender mode verified{% elif sender.get('ready') %}Gmail sender verified{% else %}Gmail sender not verified{% endif %}</strong>
+  <span>{% if sender.get('ready') and sender.get('sender_type') == 'primary_with_business_reply_to' %}The connected primary Gmail address (hidden here) is the visible authenticated From identity. Replies go to <code>{{ sender.get('reply_to_email') }}</code>. This removes the custom-domain DMARC mismatch without claiming the alias sent the message.{% elif sender.get('ready') %}<code>{{ sender.get('sender_email') }}</code> is authorized as {{ 'an accepted send-as alias' if sender.get('sender_type') == 'verified_send_as_alias' else 'the primary Gmail address' }}. Replies go to <code>{{ sender.get('reply_to_email') }}</code>.{% else %}{{ sender.get('error', 'Sender verification is unavailable.') }}{% endif %}</span>
+</section>
+<section class="panel form-panel">
+  <div class="panel-head"><div><p class="eyebrow">ISOLATED DELIVERY CHECK</p><h2>Send one controlled Gmail test</h2></div><span class="badge {{ 'completed' if sender.get('ready') and not settings.sending_enabled else 'failed' }}">{{ 'READY' if sender.get('ready') and not settings.sending_enabled else 'BLOCKED' }}</span></div>
+  <p>Use only another inbox you control. This verifies the Composio/Gmail API sender and previews the lightweight branded card without touching leads or the approved-message queue. In free mode the recipient sees the connected Gmail address as From and the business alias as Reply-To. It creates no campaign record, affiliate link, tracking pixel, or follow-up.</p>
+  <form method="post" action="/integrations/gmail/test">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="grid two">
+      <label>Controlled recipient email<input type="email" name="recipient_email" required autocomplete="email" placeholder="another inbox you control"></label>
+      <label>Type <code>I CONTROL THIS INBOX</code><input type="text" name="confirmation" required autocomplete="off"></label>
+    </div>
+    <button type="submit" {{ 'disabled' if not sender.get('ready') or settings.sending_enabled else '' }}>Send one controlled test</button>
+  </form>
+  {% if settings.sending_enabled %}<div class="notice error">Turn <code>SENDING_ENABLED</code> off before testing so the campaign queue cannot run at the same time.</div>{% endif %}
 </section>
 <div class="grid three">
 {% for toolkit, label in [('gmail','Gmail'),('google_maps','Google Maps / Places'),('googlesheets','Google Sheets')] %}

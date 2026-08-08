@@ -26,10 +26,12 @@ def main() -> None:
         "command",
         choices=[
             "discover", "fast-start", "refresh-links", "send", "sync", "sheet",
-            "connections", "gmail-sender", "ai", "mode-status", "mode-demo", "mode-live", "gates",
+            "connections", "gmail-sender", "gmail-test", "ai", "mode-status", "mode-demo", "mode-live", "gates",
         ],
     )
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--recipient", default="", help="Controlled inbox used only by gmail-test")
+    parser.add_argument("--confirm-controlled-recipient", action="store_true")
     args = parser.parse_args()
     init_db()
     ensure_system_state()
@@ -50,6 +52,17 @@ def main() -> None:
         result = ComposioGateway().connection_report()
     elif args.command == "gmail-sender":
         result = GmailClient().sender_report()
+    elif args.command == "gmail-test":
+        recipient = args.recipient.strip() or input("Controlled recipient email: ").strip()
+        confirmed = args.confirm_controlled_recipient
+        if not confirmed:
+            confirmed = input("Type I CONTROL THIS INBOX to continue: ").strip() == "I CONTROL THIS INBOX"
+        if not confirmed:
+            parser.error("Controlled-recipient confirmation was not provided; no email was sent")
+        try:
+            result = GmailClient().send_controlled_test(recipient)
+        except (RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
     elif args.command == "ai":
         result = ai_backend_report(demo_mode=get_runtime_mode() == "demo")
     elif args.command == "mode-status":

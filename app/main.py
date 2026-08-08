@@ -76,12 +76,14 @@ from .services.audit_log import record_log
 from .services.compat_sync import sync_business_from_legacy, sync_email_from_legacy
 from .services.outreach_refresh import refresh_unsent_outreach_links
 from .services.public_report import build_public_report
+from .timeutils import in_business_window
 from .workers.queue import dispatch_job
 
 configure_logging(json_logs=True)
 log = logging.getLogger(__name__)
 settings = get_settings()
 templates = Jinja2Templates(directory="app/templates")
+EMAIL_LOGO_PATH = Path("app/static/media/leadflow-logo-email.png")
 
 
 def _refresh_unsent_links_in_background() -> None:
@@ -137,7 +139,7 @@ async def lifespan(_app: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title=settings.app_name, version="1.8.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="1.14.0", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.app_secret,
@@ -252,6 +254,19 @@ def _discovery_job_payload(job: JobRun | None) -> dict | None:
         "error": _safe_job_error(job.error),
         "progress": safe_progress,
     }
+
+
+@app.get("/email-assets/leadflow-logo.png", include_in_schema=False)
+def email_logo():
+    return FileResponse(
+        EMAIL_LOGO_PATH,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=604800, immutable",
+            "Cross-Origin-Resource-Policy": "cross-origin",
+            "X-Robots-Tag": "noindex, nofollow, noarchive",
+        },
+    )
 
 
 @app.get("/health")
@@ -520,7 +535,8 @@ def integrations_page(request: Request):
     active_connections = []
     gmail_sender_report: dict[str, str | bool | None] = {
         "ready": False,
-        "sender_email": settings.sender_email,
+        "sender_email": "",
+        "reply_to_email": settings.sender_email,
         "error": "Connect Gmail and configure SENDER_EMAIL to verify the sender.",
     }
     if settings.composio_ready:
@@ -536,7 +552,8 @@ def integrations_page(request: Request):
             except Exception as exc:
                 gmail_sender_report = {
                     "ready": False,
-                    "sender_email": settings.sender_email,
+                    "sender_email": "",
+                    "reply_to_email": settings.sender_email,
                     "error": _safe_job_error(str(exc)),
                 }
     return templates.TemplateResponse(request=request, name="integrations.html", context=context(
@@ -560,6 +577,33 @@ def connect_integration(toolkit: str, csrf: str = Form(...)):
         return RedirectResponse(connect_url, status_code=303)
     except (RuntimeError, ValueError) as exc:
         return redirect("/integrations", error=str(exc))
+
+
+@admin.post("/integrations/gmail/test")
+def controlled_gmail_test(
+    csrf: str = Form(...),
+    recipient_email: str = Form(...),
+    confirmation: str = Form(...),
+):
+    check_csrf(csrf)
+    if confirmation.strip() != "I CONTROL THIS INBOX":
+        return redirect(
+            "/integrations",
+            error="Type I CONTROL THIS INBOX exactly. No test email was sent.",
+        )
+    if settings.sending_enabled:
+        return redirect(
+            "/integrations",
+            error="Set SENDING_ENABLED=false before using the isolated sender test.",
+        )
+    try:
+        GmailClient().send_controlled_test(recipient_email)
+    except (RuntimeError, ValueError) as exc:
+        return redirect("/integrations", error=str(exc))
+    return redirect(
+        "/integrations",
+        "One controlled Gmail test was sent. No lead, campaign, queue item, or follow-up was created.",
+    )
 
 
 @admin.post("/jobs/sheet")
@@ -606,10 +650,32 @@ def lead_detail(request: Request, lead_id: int):
         if lead.data_mode == "live"
         else ""
     )
+    runtime_mode = get_runtime_mode()
+    send_gate_ready = settings.production_send_ready_for(runtime_mode == "demo")
+    recipient_window_open = in_business_window(utcnow(), lead.timezone_name)
+    immediate_send_ready = bool(
+        lead.data_mode == "live"
+        and lead.status == "pending_approval"
+        and send_gate_ready
+        and settings.mailbox_authentication_confirmed
+        and recipient_window_open
+    )
+    if not settings.sending_enabled:
+        immediate_send_reason = "SENDING_ENABLED is off. Keep it off until the controlled DMARC test passes."
+    elif not settings.mailbox_authentication_confirmed:
+        immediate_send_reason = "Mailbox authentication is not confirmed after a controlled SPF/DKIM/DMARC test."
+    elif not send_gate_ready:
+        immediate_send_reason = "A production send gate is blocked; inspect /health before sending."
+    elif not recipient_window_open:
+        immediate_send_reason = "The recipient is outside the configured local business-hour window."
+    else:
+        immediate_send_reason = "Ready to send only this lead's initial approved email."
     return templates.TemplateResponse(request=request, name="lead_detail.html", context=context(
         request,
         lead=lead,
         public_report_url=public_report_url,
+        immediate_send_ready=immediate_send_ready,
+        immediate_send_reason=immediate_send_reason,
         message=request.query_params.get("message"),
         error=request.query_params.get("error"),
     ))
@@ -639,6 +705,48 @@ def approve(lead_id: int, csrf: str = Form(...)):
         return redirect(f"/leads/{lead_id}", "Lead approved; messages scheduled behind the send gate.")
     except ValueError as exc:
         return redirect(f"/leads/{lead_id}", error=str(exc))
+
+
+@admin.post("/leads/{lead_id}/approve-send-now")
+def approve_and_send_now(
+    lead_id: int,
+    csrf: str = Form(...),
+    confirm_now: str = Form(""),
+):
+    check_csrf(csrf)
+    if confirm_now != "yes":
+        return redirect(
+            f"/leads/{lead_id}",
+            error="Confirm that you reviewed this one lead before sending. No approval or send occurred.",
+        )
+    try:
+        approve_lead(lead_id, send_initial_now=True)
+    except ValueError as exc:
+        return redirect(f"/leads/{lead_id}", error=str(exc))
+
+    try:
+        dispatch = dispatch_job("send_due", lead_id)
+    except Exception as exc:
+        return redirect(
+            f"/leads/{lead_id}",
+            error=f"The lead was approved, but the immediate send job could not start: {_safe_job_error(str(exc))}",
+        )
+    if dispatch.get("mode") == "queued":
+        return redirect(
+            f"/leads/{lead_id}",
+            "Lead approved; a worker queued only this lead's initial email for immediate processing.",
+        )
+    result = dispatch.get("result")
+    if isinstance(result, dict) and int(result.get("sent", 0) or 0) == 1:
+        return redirect(
+            f"/leads/{lead_id}",
+            "Lead approved and its initial email with the signed report link was sent.",
+        )
+    reason = result.get("reason") if isinstance(result, dict) else "No send result was returned."
+    return redirect(
+        f"/leads/{lead_id}",
+        error=f"The lead was approved, but no email was sent now. {reason or 'Inspect the queue and recent jobs.'}",
+    )
 
 
 @admin.post("/leads/{lead_id}/reject")

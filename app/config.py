@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     sender_name: str = "David Brown"
     sender_role: str = "Independent Hostinger Affiliate"
     sender_email: str = ""
+    # Zero-cost mode: Gmail's authenticated primary address is the visible
+    # From identity; SENDER_EMAIL remains the verified business Reply-To alias.
+    gmail_free_primary_from_mode: bool = True
+    html_email_enabled: bool = True
     physical_postal_address: str = ""
     postal_address_attested: bool = False
     affiliate_url: str = "https://www.hostinger.com?REFERRALCODE=ZEVDAVIDBEXE"
